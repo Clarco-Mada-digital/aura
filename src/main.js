@@ -15,6 +15,7 @@ const { IconStore, openDexCacheDirs } = require('./icons');
 const windows = require('./windows');
 const install = require('./install');
 const log = require('./log');
+const update = require('./update');
 
 let win = null;
 let tray = null;
@@ -217,6 +218,7 @@ async function connect() {
   }
 
   startWatching();
+  startCallWatch();
   return current;
 }
 
@@ -452,6 +454,121 @@ function closeSession(id) {
   return true;
 }
 
+// ── Miroir du téléphone ─────────────────────────────────────────────────────
+
+let mirrorId = null;
+
+/// Ouvre — ou ramène — la fenêtre qui recopie l'écran du téléphone.
+///
+/// Une seule à la fois : deux miroirs du même écran n'apportent rien et
+/// doublent le coût d'encodage.
+async function openMirror() {
+  if (mirrorId && sessions.has(mirrorId)) {
+    const existante = sessions.get(mirrorId);
+    const bougé = await windows.toggle(existante.child.pid);
+    // Si la fenêtre était déjà devant, `toggle` l'aurait réduite : ce n'est
+    // pas ce qu'on veut quand on demande explicitement le miroir.
+    if (bougé.action === 'minimized') await windows.toggle(existante.child.pid);
+    return { id: mirrorId, mirror: true };
+  }
+
+  const settings = { ...store.all };
+  Object.assign(settings, sizing({ ...settings, flex: false }));
+  const session = await device.mirror(current.serial, settings, {
+    onUpdate: (s) => {
+      if (s.state === 'stopped' || s.state === 'failed') {
+        sessions.delete(s.id);
+        if (mirrorId === s.id) mirrorId = null;
+      }
+      broadcastSessions();
+    },
+    onFail: (s) => {
+      sessions.delete(s.id);
+      if (mirrorId === s.id) mirrorId = null;
+      broadcastSessions();
+      reportFailure(s);
+    },
+  });
+  session.mirror = true;
+  sessions.set(session.id, session);
+  mirrorId = session.id;
+  broadcastSessions();
+  log.info('miroir de l\'écran principal', (session.command || []).join(' '));
+  return { id: session.id, mirror: true };
+}
+
+// ── Appels ──────────────────────────────────────────────────────────────────
+//
+// L'écran d'appel entrant s'affiche sur l'écran **principal** du téléphone —
+// jamais sur un écran virtuel. Sans miroir, on ne le verrait pas ; sans
+// surveillance, on ne saurait même pas qu'il sonne.
+
+const CALL_POLL = 3000;
+let callTimer = null;
+let callNow = null;
+
+function startCallWatch() {
+  clearInterval(callTimer);
+  callTimer = setInterval(() => { pollCall().catch(() => {}); }, CALL_POLL);
+}
+
+async function pollCall() {
+  if (!current.serial) return;
+  const appel = await device.callState(current.serial);
+  const avant = callNow ? `${callNow.id}:${callNow.state}` : '';
+  const apres = appel ? `${appel.id}:${appel.state}` : '';
+  if (avant === apres) return;
+
+  const nouveau = appel && (!callNow || callNow.id !== appel.id);
+  callNow = appel;
+  if (win && !win.isDestroyed()) win.webContents.send('call:changed', appel);
+  if (!appel) return;
+
+  log.info(`appel ${appel.state} (${appel.id})`);
+
+  // Un appel entrant ne peut pas attendre le prochain coup d'œil au widget.
+  if (nouveau && appel.state === 'RINGING' && store.get('raiseOnCall')) {
+    showLauncher();
+    if (store.get('mirrorOnCall')) openMirror().catch(() => {});
+  }
+}
+
+// ── Mise à jour ─────────────────────────────────────────────────────────────
+
+const UPDATE_DELAY = 20000;
+
+/// Branche le vérificateur, et regarde une fois passé le démarrage.
+///
+/// Pas au premier instant : les vingt premières secondes appartiennent à
+/// l'inventaire des applications et à l'extraction des icônes, qui se
+/// partagent déjà le même câble USB et la même patience.
+function startUpdates() {
+  // En développement, `electron-updater` n'a pas de paquet auquel se comparer
+  // et lève une erreur à chaque appel. On ne le sollicite donc que là où il a
+  // un sens : dans une application installée.
+  if (!app.isPackaged) return;
+
+  update.init((etat) => {
+    if (win && !win.isDestroyed()) win.webContents.send('update:changed', etat);
+    if (etat.statut === 'disponible' && store.get('autoUpdate')) update.download();
+    if (etat.statut === 'prête') announceUpdate(etat);
+  });
+
+  if (store.get('autoUpdate')) setTimeout(() => { update.check(); }, UPDATE_DELAY);
+}
+
+/// Une version prête ne s'impose pas : elle se propose.
+function announceUpdate(etat) {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({
+    title: `Aura ${etat.version} est prête`,
+    body: "Cliquez pour redémarrer et l'installer.",
+    icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+  });
+  n.on('click', () => update.install());
+  n.show();
+}
+
 // ── Diagnostic ──────────────────────────────────────────────────────────────
 
 async function gatherDiagnostic() {
@@ -539,6 +656,7 @@ function registerIpc() {
     const state = await connect();
     return {
       settings: store.all,
+      version: app.getVersion(),
       hotkeyResult: hotkeyState,
       engine: state.engine ? { path: state.engine.path, version: state.engine.version.release } : null,
       device: state.info,
@@ -570,6 +688,42 @@ function registerIpc() {
   });
 
   ipcMain.handle('app:launch', async (_e, pkg, once) => launch(pkg, once));
+
+  ipcMain.handle('mirror:open', async () => openMirror());
+
+  ipcMain.handle('update:state', async () => ({ ...update.state(), packaged: app.isPackaged, version: app.getVersion() }));
+  ipcMain.handle('update:check', async () => {
+    if (!app.isPackaged) return { statut: 'développement', packaged: false };
+    return update.check();
+  });
+  ipcMain.handle('update:download', async () => update.download());
+  ipcMain.handle('update:install', async () => { update.install(); return true; });
+
+  ipcMain.handle('call:state', async () => callNow);
+
+  ipcMain.handle('call:answer', async () => {
+    const ok = await device.answerCall(current.serial);
+    log.info(`décrocher : ${ok ? 'envoyé' : 'refusé'}`);
+    return ok;
+  });
+
+  ipcMain.handle('call:hangup', async () => {
+    const ok = await device.hangUpCall(current.serial);
+    log.info(`raccrocher : ${ok ? 'envoyé' : 'refusé'}`);
+    return ok;
+  });
+
+  ipcMain.handle('call:dial', async (_e, number) => {
+    // Le composeur s'ouvre dans une fenêtre Aura, pas sur le téléphone : on
+    // lui donne d'abord un écran virtuel à lui.
+    const dialer = (await device.defaultDialer(current.serial)) || store.get('dialer');
+    const session = await launch(dialer);
+    const cible = sessions.get(session.id);
+    for (let i = 0; i < 40 && cible && cible.displayId === null; i += 1) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return device.dial(current.serial, number, cible ? cible.displayId : null);
+  });
 
   ipcMain.handle('diag:text', async () => formatDiagnostic(await gatherDiagnostic()));
 
@@ -765,12 +919,14 @@ if (!single) {
     createWindow();
     createTray();
     hotkeyState = registerHotkey();
+    startUpdates();
   });
 
   app.on('window-all-closed', () => { /* le lanceur vit dans la barre système */ });
 
   app.on('will-quit', () => {
     clearInterval(watchTimer);
+    clearInterval(callTimer);
     globalShortcut.unregisterAll();
     // Laisser des scrcpy orphelins laisserait aussi des écrans virtuels ouverts
     // sur le téléphone.

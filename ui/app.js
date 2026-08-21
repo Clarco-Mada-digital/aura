@@ -17,6 +17,7 @@ const state = {
   selected: -1,
   results: [],
   refreshing: false,
+  call: null,
 };
 
 const iconCache = new Map(); // paquet → { data, mime } ou null
@@ -49,6 +50,22 @@ function score(app, needle) {
 // d'œil ; au-delà, on affine sa recherche plutôt que de faire défiler.
 const MAX_HITS = 8;
 
+const DIAL = '__composer__';
+
+/// Dernier état connu du vérificateur de mise à jour.
+let updateState = null;
+
+/// Le texte saisi, s'il ressemble à un numéro de téléphone.
+///
+/// Quatre chiffres au minimum : en dessous, « 12 » ou « 007 » sont bien plus
+/// souvent le début du nom d'une application qu'un numéro à appeler.
+function asNumber(query) {
+  const brut = String(query).trim();
+  if (!/^[+0-9][0-9 .\-()]*$/.test(brut)) return null;
+  const chiffres = brut.replace(/[^0-9+]/g, '');
+  return chiffres.replace(/[^0-9]/g, '').length >= 4 ? chiffres : null;
+}
+
 function compute() {
   const needle = state.query.trim().toLowerCase();
 
@@ -68,13 +85,21 @@ function compute() {
   }
 
   state.mode = 'hits';
-  state.results = state.apps
+  const hits = state.apps
     .filter((a) => state.settings.showSystemApps || !a.system || isFavorite(a.package))
     .map((a) => ({ a, s: score(a, needle) }))
     .filter((r) => r.s >= 0)
     .sort((x, y) => y.s - x.s)
     .slice(0, MAX_HITS)
     .map((r) => r.a);
+
+  // Un numéro tapé dans la barre de recherche mène au composeur, avec le
+  // numéro déjà en place. C'est le geste qu'on attend d'un lanceur relié à un
+  // téléphone, et il ne coûte qu'une ligne de plus dans la liste.
+  const numero = asNumber(state.query);
+  state.results = numero
+    ? [{ package: DIAL, name: `Appeler ${numero}`, dial: numero, system: false }, ...hits]
+    : hits;
   state.selected = 0;
 }
 
@@ -259,6 +284,28 @@ function renderHits() {
   state.results.forEach((app, index) => {
     const row = document.createElement('div');
     row.className = `hit${index === state.selected ? ' sel' : ''}`;
+
+    if (app.dial) {
+      const glyphe = document.createElement('div');
+      glyphe.className = 'app-icon sm dial';
+      glyphe.innerHTML =
+        '<svg viewBox="0 0 24 24"><path d="M6.6 3.5l2.6.5 1 3.4-2 1.4a12 12 0 0 0 5 5l1.4-2 3.4 1 .5 2.6a2 2 0 0 1-2 2.3A15.5 15.5 0 0 1 4.3 5.5a2 2 0 0 1 2.3-2Z"/></svg>';
+      const texts = document.createElement('div');
+      texts.className = 'texts';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = app.name;
+      const sub = document.createElement('div');
+      sub.className = 'pkg';
+      sub.textContent = 'Ouvre le composeur, le numéro déjà saisi';
+      texts.append(name, sub);
+      row.append(glyphe, texts);
+      row.addEventListener('click', () => launch(app.package, null, app.dial));
+      row.addEventListener('mouseenter', () => select(index, false));
+      hits.appendChild(row);
+      return;
+    }
+
     row.appendChild(iconElement(app, 'sm'));
 
     const texts = document.createElement('div');
@@ -792,6 +839,55 @@ function renderSettings() {
   // Une application qui ne s'ouvre pas ne dit rien d'elle-même : le processus
   // meurt en une seconde, hors de tout terminal. Ce bloc rassemble ce qu'il
   // faut pour comprendre — et surtout pour le recopier dans un signalement.
+  // ── Mise à jour ───────────────────────────────────────────────────────────
+  group('Mise à jour');
+
+  const etat = document.createElement('div');
+  etat.className = 'desc';
+
+  const bouton = document.createElement('button');
+  bouton.className = 'ghost';
+
+  const peindre = (u) => {
+    const paquet = u && u.packaged !== false;
+    if (!paquet) {
+      etat.textContent = 'Version de développement — la mise à jour ne s’applique qu’à une application installée.';
+      bouton.textContent = 'Indisponible';
+      bouton.disabled = true;
+      return;
+    }
+    bouton.disabled = false;
+    switch (u.statut) {
+      case 'vérification':
+        etat.textContent = 'Vérification…'; bouton.textContent = 'Patientez'; bouton.disabled = true; break;
+      case 'disponible':
+        etat.textContent = `Aura ${u.version} est disponible.`; bouton.textContent = 'Télécharger'; break;
+      case 'téléchargement':
+        etat.textContent = `Téléchargement — ${u.progression} %`; bouton.textContent = 'En cours'; bouton.disabled = true; break;
+      case 'prête':
+        etat.textContent = `Aura ${u.version} est prête à s’installer.`; bouton.textContent = 'Redémarrer'; break;
+      case 'erreur':
+        etat.textContent = `Échec : ${u.erreur}`; bouton.textContent = 'Réessayer'; break;
+      case 'à jour':
+        etat.textContent = 'Aucune version plus récente.'; bouton.textContent = 'Vérifier'; break;
+      default:
+        etat.textContent = 'Non vérifié depuis le démarrage.'; bouton.textContent = 'Vérifier';
+    }
+  };
+
+  bouton.onclick = async () => {
+    const u = updateState || {};
+    if (u.statut === 'prête') return window.aura.installUpdate();
+    if (u.statut === 'disponible') { updateState = await window.aura.downloadUpdate(); return peindre(updateState); }
+    updateState = await window.aura.checkUpdate();
+    peindre(updateState);
+  };
+
+  window.aura.updateState().then((u) => { updateState = u; peindre(u); });
+  peindre(updateState);
+  field('Version installée', `Aura ${state.version || ''}`.trim(), bouton);
+  body.appendChild(etat);
+
   group('Diagnostic');
 
   const voir = document.createElement('button');
@@ -977,7 +1073,18 @@ async function applyHotkey(accelerator) {
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
-async function launch(pkg, once = null) {
+async function launch(pkg, once = null, numero = null) {
+  if (pkg === DIAL || numero) {
+    toast('Ouverture du composeur…');
+    try {
+      const fait = await window.aura.dial(numero);
+      if (!fait || !fait.ok) toast("Le composeur n'a pas répondu", true);
+    } catch (err) {
+      toast(String(err.message || err), true);
+    }
+    return;
+  }
+
   const app = state.apps.find((a) => a.package === pkg);
   try {
     await window.aura.launch(pkg, once);
@@ -985,6 +1092,41 @@ async function launch(pkg, once = null) {
   } catch (err) {
     toast(String(err.message || err), true);
   }
+}
+
+// ── Appel en cours ──────────────────────────────────────────────────────────
+
+const ETATS = {
+  RINGING: 'Appel entrant',
+  DIALING: 'Appel en cours…',
+  CONNECTING: 'Connexion…',
+  ACTIVE: 'En communication',
+  ON_HOLD: 'En attente',
+};
+
+function renderCall() {
+  const banner = $('call');
+  const call = state.call;
+
+  if (!call || !ETATS[call.state]) {
+    banner.hidden = true;
+    fit();
+    return;
+  }
+
+  const sonne = call.state === 'RINGING';
+  banner.hidden = false;
+  banner.classList.toggle('active', !sonne);
+  $('callState').textContent = ETATS[call.state];
+
+  // Android masque le numéro dans `dumpsys telecom`. Le nom de l'appelant, en
+  // revanche, est dans la notification de l'appel : on va le chercher là.
+  const notif = state.notifications.find((n) => n.category === 'call');
+  $('callWho').textContent = notif ? [notif.title, notif.text].filter(Boolean).join(' — ') : 'Numéro masqué par Android';
+
+  $('callTake').hidden = !sonne;
+  $('callDrop').textContent = sonne ? 'Refuser' : 'Raccrocher';
+  fit();
 }
 
 async function toggleFavorite(pkg) {
@@ -1171,6 +1313,7 @@ async function boot() {
   state.error = data.error;
   state.apps = data.apps || [];
   state.collectedAt = data.collectedAt;
+  state.version = data.version;
   state.sessions = data.sessions || [];
 
   $('hotkeyHint').textContent = prettyHotkey(state.settings.hotkey);
@@ -1194,6 +1337,7 @@ async function boot() {
   compute();
   renderAll();
   pollNotifications();
+  window.aura.callState().then((call) => { state.call = call; renderCall(); }).catch(() => {});
 
   // L'inventaire n'existe pas encore au tout premier lancement : on le
   // construit sans rien demander, l'attente est expliquée par le message.
@@ -1282,6 +1426,32 @@ function columns() {
 
 // Événements du processus principal
 window.aura.onSessions((list) => { state.sessions = list; renderSessions(); });
+
+window.aura.onCall((call) => { state.call = call; renderCall(); });
+
+window.aura.onUpdate((etat) => {
+  updateState = { ...(updateState || {}), ...etat };
+  // Le panneau se redessine seul s'il est ouvert : sinon l'utilisateur verrait
+  // une barre de progression figée.
+  if (!$('panelSettings').hidden) renderSettings();
+});
+
+$('btnMirror').onclick = async () => {
+  try {
+    await window.aura.openMirror();
+    toast('Écran du téléphone');
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+
+$('callSee').onclick = () => window.aura.openMirror().catch(() => {});
+$('callTake').onclick = async () => {
+  toast((await window.aura.answerCall()) ? 'Décroché' : "Le téléphone n'a pas répondu", false);
+};
+$('callDrop').onclick = async () => {
+  toast((await window.aura.hangUpCall()) ? 'Raccroché' : "Le téléphone n'a pas répondu", false);
+};
 
 // Un lancement raté est le seul événement qu'Aura ne peut pas se permettre de
 // taire : sans lui, l'utilisateur voit « s'ouvre… » puis plus rien du tout.

@@ -142,5 +142,8 @@
   },
   "bugs": {
     "url": "https://github.com/Clarco-Mada-digital/aura/issues"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

@@ -242,6 +242,20 @@ async function listApps(serial) {
 function sessionArgs(serial, app, settings) {
   const args = [];
   if (serial) args.push('--serial', serial);
+
+  // Le miroir recopie l'écran existant : ni écran virtuel, ni application à
+  // démarrer, et la fenêtre se contente de mettre l'image à l'échelle.
+  if (settings.mirror) {
+    if (settings.windowWidth) args.push(`--window-width=${Math.round(settings.windowWidth)}`);
+    else if (settings.windowHeight) args.push(`--window-height=${Math.round(settings.windowHeight)}`);
+    args.push(`--video-codec=${settings.codec}`);
+    if (settings.bitrate) args.push(`--video-bit-rate=${settings.bitrate}`);
+    if (settings.maxFps) args.push(`--max-fps=${settings.maxFps}`);
+    if (!settings.audio) args.push('--no-audio');
+    args.push(`--window-title=${app.name}`);
+    return args;
+  }
+
   args.push(`--new-display=${settings.width}x${settings.height}/${settings.dpi}`);
   args.push(`--start-app=${app.package}`);
   if (settings.flex) args.push('--flex-display');
@@ -415,6 +429,105 @@ function launchApp(serial, app, settings, hooks = {}) {
   });
 }
 
+// ── Miroir de l'écran principal ─────────────────────────────────────────────
+
+/// Ouvre l'écran réel du téléphone, tel quel.
+///
+/// Tout ce qui est **système** refuse un écran virtuel : l'écran d'appel
+/// entrant, le volet de notifications, l'assistant, les réglages Android.
+/// Ils s'affichent sur l'écran par défaut, et le seul moyen de les voir depuis
+/// l'ordinateur est de le recopier.
+function mirror(serial, settings, hooks = {}) {
+  return launchApp(serial, { package: null, name: 'Téléphone' }, { ...settings, mirror: true }, hooks);
+}
+
+// ── Appels ──────────────────────────────────────────────────────────────────
+
+/// L'état des appels en cours, lu dans le gestionnaire de télécommunications.
+///
+/// `dumpsys telecom` pèse 170 ko et contient tout l'historique ; le filtre
+/// s'applique donc **sur l'appareil**, et seules les lignes du gestionnaire
+/// d'appels vivants remontent — celles de l'historique portent un horodatage
+/// en tête et sont écartées par l'ancrage en début de ligne.
+///
+/// Le numéro, lui, est masqué par Android dans cette sortie. C'est la
+/// notification de l'appel qui donne le nom de l'appelant.
+async function callState(serial) {
+  const out = await adb(
+    serial,
+    ['shell', `dumpsys telecom | awk '/^[[:space:]]*\\[Call id=/{print}'`],
+    { timeout: 8000 }
+  );
+  if (!out.ok) return null;
+
+  const appels = [];
+  for (const line of out.stdout.split('\n')) {
+    const id = /\[Call id=([^,]+)/.exec(line);
+    const state = /state=([A-Z_]+)/.exec(line);
+    if (!id || !state) continue;
+    appels.push({ id: id[1], state: state[1] });
+  }
+  if (!appels.length) return null;
+
+  // Un appel qui sonne prime sur tout le reste : c'est le seul qui demande une
+  // décision immédiate.
+  const ordre = ['RINGING', 'DIALING', 'CONNECTING', 'ACTIVE', 'ON_HOLD'];
+  for (const state of ordre) {
+    const trouve = appels.find((a) => a.state === state);
+    if (trouve) return trouve;
+  }
+  return null;
+}
+
+/// Décrocher.
+///
+/// `KEYCODE_HEADSETHOOK` plutôt que `KEYCODE_CALL` : c'est la touche des
+/// kits mains-libres, celle qu'Android accepte encore d'une source externe sur
+/// les versions récentes.
+async function answerCall(serial) {
+  const out = await adb(serial, ['shell', 'input keyevent 79'], { timeout: 8000 });
+  return out.ok;
+}
+
+/// Raccrocher, ou refuser un appel qui sonne.
+async function hangUpCall(serial) {
+  const out = await adb(serial, ['shell', 'input keyevent 6'], { timeout: 8000 });
+  return out.ok;
+}
+
+/// Le composeur par défaut de l'appareil.
+///
+/// Codé en dur, ce serait `com.samsung.android.dialer` chez l'un et
+/// `com.google.android.dialer` chez l'autre. Android sait répondre lui-même à
+/// la question : on la lui pose.
+async function defaultDialer(serial) {
+  const out = await adb(
+    serial,
+    ['shell', 'cmd package resolve-activity --brief -a android.intent.action.DIAL'],
+    { timeout: 10000 }
+  );
+  const ligne = out.stdout.trim().split('\n').pop() || '';
+  const pkg = ligne.split('/')[0].trim();
+  return PACKAGE.test(pkg) ? pkg : null;
+}
+
+/// Ouvre le composeur avec un numéro pré-rempli.
+///
+/// `ACTION_DIAL` et non `ACTION_CALL` : le numéro s'affiche, et c'est
+/// l'utilisateur qui appuie sur le bouton vert. Un numéro mal tapé part trop
+/// vite autrement.
+async function dial(serial, number, displayId = null) {
+  const propre = String(number).replace(/[^0-9+*#,;]/g, '');
+  if (!propre) throw new Error('numéro vide');
+  const cible = displayId === null ? '' : `--display ${Number(displayId)} `;
+  const out = await adb(
+    serial,
+    ['shell', `am start --user ${OWNER_USER} ${cible}-a android.intent.action.DIAL -d ${quote(`tel:${propre}`)}`],
+    { timeout: 10000 }
+  );
+  return { ok: out.ok && !/Error|Exception/.test(out.stdout + out.stderr), number: propre };
+}
+
 // ── Notifications ───────────────────────────────────────────────────────────
 
 // `dumpsys notification --noredact` décrit chaque notification affichée. On ne
@@ -544,6 +657,12 @@ async function diagnostics(serial) {
 }
 
 module.exports = {
+  mirror,
+  defaultDialer,
+  callState,
+  answerCall,
+  hangUpCall,
+  dial,
   diagnostics,
   explain,
   childEnv,

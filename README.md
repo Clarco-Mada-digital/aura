@@ -278,6 +278,78 @@ se gêneraient les unes les autres.
 
 ---
 
+## Appels et écran du téléphone
+
+### Le miroir
+
+Tout ce qui est **système** refuse un écran virtuel : l'écran d'appel entrant,
+le volet de notifications, les réglages Android. Ces surfaces s'affichent sur
+l'écran par défaut, et le seul moyen de les voir depuis l'ordinateur est de le
+recopier. Le bouton en forme de téléphone, dans la barre du widget, ouvre ce
+miroir — une seule fenêtre à la fois, deux copies du même écran ne feraient que
+doubler le coût d'encodage.
+
+### Passer un appel
+
+Tapez un numéro dans la barre de recherche : à partir de quatre chiffres, une
+ligne *Appeler …* apparaît au-dessus des applications. Elle ouvre le composeur
+du téléphone dans une fenêtre Aura, le numéro déjà saisi — il ne reste qu'à
+appuyer sur le bouton vert.
+
+C'est volontairement `ACTION_DIAL` et non `ACTION_CALL` : un numéro mal tapé
+partirait trop vite. Le composeur n'est pas codé en dur non plus, il est
+demandé à Android (`cmd package resolve-activity`), qui répond
+`com.samsung.android.dialer` ici et autre chose ailleurs.
+
+### Recevoir un appel
+
+`dumpsys telecom` donne l'état réel des appels — plus fiable que la
+notification, qui dépend de l'application. Le filtre s'applique **sur
+l'appareil** : la sortie complète pèse 170 ko, la ligne utile une trentaine
+d'octets, et l'historique est écarté par un ancrage en début de ligne.
+
+Quand le téléphone sonne, un bandeau apparaît en haut du widget avec *Voir*,
+*Répondre* et *Refuser* ; le miroir s'ouvre tout seul, et le widget passe au
+premier plan. Décrocher passe par `KEYCODE_HEADSETHOOK` — la touche des kits
+mains-libres, celle qu'Android accepte encore d'une source externe — et
+raccrocher par `KEYCODE_ENDCALL`.
+
+Android masque le numéro dans cette sortie ; c'est la notification de l'appel
+qui donne le nom de l'appelant, et le bandeau va le chercher là.
+
+### Ce qui n'est pas possible
+
+**Parler dans le micro de l'ordinateur.** scrcpy sait *capturer* l'audio du
+téléphone, y compris celui d'un appel (`--audio-source=voice-call`), mais il
+n'injecte aucun son *vers* l'appareil — aucune option ne le permet. On peut
+donc voir l'appel, décrocher depuis le PC et l'entendre dans les haut-parleurs
+de l'ordinateur, mais pour répondre il faut le micro du téléphone ou un casque
+Bluetooth apparié avec lui. Aucun contournement ADB n'existe.
+
+---
+
+## Mise à jour
+
+Aura interroge les publications GitHub vingt secondes après le démarrage —
+pas avant : les premières secondes appartiennent à l'inventaire des
+applications et à l'extraction des icônes, qui se partagent déjà le câble USB.
+
+Deux garde-fous. Le téléchargement ne part pas sans accord si l'automatisme est
+désactivé, parce qu'une centaine de mégaoctets ne se prend pas sans prévenir
+sur une connexion facturée au volume. Et rien ne s'installe en pleine session :
+le paquet est posé, et remplace l'application au redémarrage — tout de suite si
+on clique sur l'alerte, au prochain lancement sinon.
+
+*Réglages → Mise à jour* montre l'état et permet de vérifier à la main. En
+développement, la section le dit et se désactive : `electron-updater` n'a pas
+de paquet auquel se comparer.
+
+Sous Linux, seule l'**AppImage** se met à jour ainsi. Un `.deb` s'installe et
+se met à jour par le gestionnaire de paquets du système ; c'est le prix d'un
+paquet intégré à la distribution.
+
+---
+
 ## Quand une application ne s'ouvre pas
 
 C'est le défaut le plus déroutant qu'une application de ce genre puisse avoir :
@@ -333,6 +405,7 @@ src/store.js     réglages, favoris, historique (JSON)
 src/install.js   téléchargement et vérification de scrcpy
 src/windows.js   lever et réduire les fenêtres d'application (X11)
 src/log.js       journal de bord, pour les échecs qu'on ne voit pas passer
+src/update.js    vérification et installation des nouvelles versions
 ui/              interface : index.html, style.css, app.js
 ```
 

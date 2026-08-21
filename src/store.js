@@ -48,7 +48,15 @@ const DEFAULTS = {
   // ramené au premier plan pour un appel entrant.
   desktopNotifications: true,
   raiseOnCall: true,
+  // Un appel entrant s'affiche sur l'écran principal du téléphone : sans
+  // miroir, il n'y a rien à voir depuis l'ordinateur.
+  mirrorOnCall: true,
+  // Composeur par défaut, pour l'appel sortant depuis la barre de recherche.
+  dialer: 'com.samsung.android.dialer',
   freeHeight: false,
+  // Vérifie les publications au démarrage et télécharge en fond. L'install
+  // reste un geste volontaire.
+  autoUpdate: true,
   showSystemApps: false,
   favorites: [],
   recents: [],
