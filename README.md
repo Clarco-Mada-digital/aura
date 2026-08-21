@@ -109,21 +109,28 @@ méthodes de saisie, `Alt+Espace` au menu de fenêtre.
 
 Une fenêtre d'application fait exactement la taille de son écran virtuel :
 `--new-display=1280x800` ouvre un pavé de 1280 px de large. C'est beaucoup pour
-une application de téléphone posée à côté de son travail.
+une application de téléphone posée à côté de son travail. Il y a deux façons de
+la rétrécir, et elles ne donnent pas du tout le même résultat.
 
-`--window-width` ne règle pas le problème : scrcpy le refuse dès que
-`--flex-display` est actif, puisque c'est alors la fenêtre qui commande la
-définition. La définition réglée dans les préférences donne donc la **forme**
-et le maximum, et Aura la réduit jusqu'à tenir dans la part d'écran demandée —
-*Réglages → Taille à l'ouverture*, de 35 % à 85 % de l'écran de travail.
+**Réduire l'image.** L'écran virtuel garde sa définition et sa densité, et
+scrcpy met la vidéo à l'échelle : la mise en page est celle du téléphone, en
+plus petit et plus net. C'est le comportement par défaut.
 
-Le plancher s'applique au facteur de réduction, pas à chaque dimension : en
-bornant les côtés séparément, une application en portrait se retrouverait
-déformée aux petites tailles. En dessous de 360 px sur son petit côté, une
-application Android n'a de toute façon plus de mise en page utilisable.
+**Réduire l'écran virtuel** (case *Suivre la fenêtre*). Android relaie une
+surface plus petite et refait sa mise en page. Le piège est là : à densité
+constante, une fenêtre de 360 px à 320 ppp ne fait plus que **180 dp** de
+large — Android y voit un téléphone minuscule et dessine tout en énorme. Aura
+réduit donc la densité dans la même proportion que la définition : même nombre
+de dp, même mise en page, simplement dessinée sur moins de pixels.
 
-Sur un écran de 1920 × 1032, à 55 % : une application en paysage s'ouvre en
-908 × 568, une application en portrait en 360 × 576.
+Le premier mode demande `--window-width`/`--window-height`, que scrcpy refuse
+dès que `--flex-display` est actif — puisque c'est alors la fenêtre qui
+commande la définition. D'où les deux chemins.
+
+*Réglages → Taille à l'ouverture* règle la part de l'écran de travail occupée,
+de 35 % à 85 %. Sur un écran de 1920 × 1032, à 55 %, un écran virtuel
+900 × 1600 s'ouvre dans une fenêtre de 319 × 567 : dix conversations visibles
+là où il en tenait quatre.
 
 ### Une interface qui change vraiment de taille
 

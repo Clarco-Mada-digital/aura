@@ -245,6 +245,10 @@ function sessionArgs(serial, app, settings) {
   args.push(`--new-display=${settings.width}x${settings.height}/${settings.dpi}`);
   args.push(`--start-app=${app.package}`);
   if (settings.flex) args.push('--flex-display');
+  // Taille d'ouverture de la fenêtre. scrcpy refuse ces options avec
+  // `--flex-display` : dans ce cas c'est la définition qui a déjà été réduite.
+  else if (settings.windowWidth) args.push(`--window-width=${Math.round(settings.windowWidth)}`);
+  else if (settings.windowHeight) args.push(`--window-height=${Math.round(settings.windowHeight)}`);
   if (settings.keepActive) args.push('--keep-active');
   if (settings.noSystemDecorations) args.push('--no-vd-system-decorations');
   // Verrouille la rotation captée. Sans cela, une application qui impose son

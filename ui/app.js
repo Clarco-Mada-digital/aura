@@ -698,11 +698,11 @@ function renderSettings() {
   };
 
   group('Fenêtres d’application');
-  field('Définition', "Taille de l'écran virtuel Android", size);
+  field('Définition', "Écran virtuel Android : sa forme et sa netteté", size);
   field('Densité', '160 ppp donne une mise en page de tablette', select('dpi', [[120, '120 ppp'], [160, '160 ppp'], [240, '240 ppp'], [320, '320 ppp']]));
   field('Taille à l’ouverture', "Part de l'écran occupée par la fenêtre",
     select('windowScale', [[0.35, 'Petite — 35 %'], [0.45, 'Réduite — 45 %'], [0.55, 'Moyenne — 55 %'], [0.7, 'Grande — 70 %'], [0.85, 'Très grande — 85 %']]));
-  field('Suivre la fenêtre', "L'écran Android se redimensionne avec la fenêtre", toggle('flex'));
+  field('Suivre la fenêtre', "Android relaie une surface plus petite. Décoché, l'image est simplement mise à l'échelle — plus net", toggle('flex'));
   field('Garder actif', "L'écran virtuel ne s'éteint pas", toggle('keepActive'));
   field('Son de l’appareil', 'Redirige l’audio vers l’ordinateur (Android 11+)', toggle('audio'));
   field('Codec vidéo', 'H.265 pour les grandes fenêtres, si l’appareil suit', select('codec', [['h264', 'H.264'], ['h265', 'H.265'], ['av1', 'AV1']]));

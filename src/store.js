@@ -15,7 +15,10 @@ const DEFAULTS = {
   // 160 ppp donne une mise en page « tablette » ; la densité native du
   // téléphone (420) produirait une interface mobile étirée sur grand écran.
   dpi: 160,
-  flex: true,
+  // Décoché, l'écran virtuel garde sa définition et scrcpy met l'image à
+  // l'échelle : la mise en page reste celle du téléphone, en plus petit et
+  // plus net. C'est ce qu'on attend d'une fenêtre qu'on rétrécit.
+  flex: false,
   keepActive: true,
   audio: false,
   codec: 'h264',

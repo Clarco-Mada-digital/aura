@@ -333,32 +333,55 @@ function broadcastSessions() {
   if (win && !win.isDestroyed()) win.webContents.send('sessions:changed', sessionList());
 }
 
-/// Définition de l'écran virtuel, ramenée à une fraction de l'écran réel.
+/// Ramène la fenêtre d'application à une fraction de l'écran, par le chemin
+/// que scrcpy autorise.
 ///
-/// La fenêtre d'une application fait exactement la taille de son écran
-/// virtuel : `--new-display=1280x800` ouvre un pavé de 1280 px de large, bien
-/// plus gros que ce qu'on attend d'une application de téléphone posée à côté
-/// de son travail. On ne peut pas s'en sortir avec `--window-width` : scrcpy
-/// le refuse dès que `--flex-display` est actif, puisque c'est alors la
-/// fenêtre qui commande la définition.
+/// Il y a deux façons de faire une petite fenêtre, et elles ne donnent pas du
+/// tout le même résultat :
 ///
-/// La définition réglée dans les préférences donne donc la **forme** et le
-/// maximum ; ce calcul la réduit jusqu'à tenir dans la part d'écran demandée.
-function displaySize(settings) {
+///   - **Réduire l'image.** L'écran virtuel garde sa définition et sa densité,
+///     et scrcpy met la vidéo à l'échelle. La mise en page Android est
+///     exactement celle du téléphone, en plus petit. C'est ce qu'on veut, et
+///     c'est le plus net.
+///   - **Réduire l'écran virtuel.** Android relaie une surface plus petite. À
+///     densité constante, il y voit un très petit téléphone et dessine tout en
+///     énorme : une fenêtre de 360 px à 320 ppp ne fait que 180 dp de large.
+///     Il faut donc réduire la densité dans la même proportion, sans quoi le
+///     contenu grossit au lieu de rétrécir.
+///
+/// La première demande `--window-width`/`--window-height`, que scrcpy refuse
+/// quand `--flex-display` est actif — puisque c'est alors la fenêtre qui
+/// commande la définition. On prend donc l'un ou l'autre selon le réglage.
+function sizing(settings) {
   const part = Math.min(1, Math.max(0.25, Number(settings.windowScale) || 0.55));
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
   const width = settings.width || 1280;
   const height = settings.height || 800;
+  const tenir = Math.min(1, (sw * part) / width, (sh * part) / height);
+
+  if (!settings.flex) {
+    if (tenir >= 1) return {};
+    // Une seule dimension : scrcpy déduit l'autre et garde le rapport, ce qui
+    // évite les bandes noires.
+    return (sw * part) / width < (sh * part) / height
+      ? { windowWidth: Math.max(280, Math.round(width * tenir)) }
+      : { windowHeight: Math.max(280, Math.round(height * tenir)) };
+  }
 
   // En dessous de 360 px sur son petit côté, une application Android n'a plus
   // de mise en page utilisable. Le plancher s'applique au facteur, pas à
   // chaque dimension : autrement la forme se déformerait aux petites tailles.
   const plancher = 360 / Math.min(width, height);
-  const facteur = Math.max(plancher, Math.min(1, (sw * part) / width, (sh * part) / height));
-  // Les encodeurs vidéo veulent des dimensions paires.
+  const facteur = Math.max(plancher, tenir);
   const pair = (n) => Math.round(n / 2) * 2;
 
-  return { width: pair(width * facteur), height: pair(height * facteur) };
+  return {
+    width: pair(width * facteur),
+    height: pair(height * facteur),
+    // La densité suit la définition : même nombre de « dp », donc la même
+    // mise en page, simplement dessinée sur moins de pixels.
+    dpi: Math.max(72, Math.round((settings.dpi || 160) * facteur)),
+  };
 }
 
 /// Dernier échec de lancement, gardé pour l'écran de diagnostic.
@@ -388,7 +411,7 @@ async function launch(pkg, once = null) {
   // réglages mémorisés pour cette application, puis le choix d'un seul
   // lancement.
   const settings = { ...store.all, ...store.overrideFor(pkg), ...(once || {}) };
-  Object.assign(settings, displaySize(settings));
+  Object.assign(settings, sizing(settings));
   let session;
   try {
     session = await device.launchApp(current.serial, app_, settings, {
