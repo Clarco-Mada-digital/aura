@@ -1,6 +1,6 @@
 {
   "name": "aura",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Un widget de bureau pour ouvrir vos applications Android, propulsé par scrcpy.",
   "main": "src/main.js",
   "scripts": {
