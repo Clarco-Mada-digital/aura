@@ -333,6 +333,34 @@ function broadcastSessions() {
   if (win && !win.isDestroyed()) win.webContents.send('sessions:changed', sessionList());
 }
 
+/// Définition de l'écran virtuel, ramenée à une fraction de l'écran réel.
+///
+/// La fenêtre d'une application fait exactement la taille de son écran
+/// virtuel : `--new-display=1280x800` ouvre un pavé de 1280 px de large, bien
+/// plus gros que ce qu'on attend d'une application de téléphone posée à côté
+/// de son travail. On ne peut pas s'en sortir avec `--window-width` : scrcpy
+/// le refuse dès que `--flex-display` est actif, puisque c'est alors la
+/// fenêtre qui commande la définition.
+///
+/// La définition réglée dans les préférences donne donc la **forme** et le
+/// maximum ; ce calcul la réduit jusqu'à tenir dans la part d'écran demandée.
+function displaySize(settings) {
+  const part = Math.min(1, Math.max(0.25, Number(settings.windowScale) || 0.55));
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+  const width = settings.width || 1280;
+  const height = settings.height || 800;
+
+  // En dessous de 360 px sur son petit côté, une application Android n'a plus
+  // de mise en page utilisable. Le plancher s'applique au facteur, pas à
+  // chaque dimension : autrement la forme se déformerait aux petites tailles.
+  const plancher = 360 / Math.min(width, height);
+  const facteur = Math.max(plancher, Math.min(1, (sw * part) / width, (sh * part) / height));
+  // Les encodeurs vidéo veulent des dimensions paires.
+  const pair = (n) => Math.round(n / 2) * 2;
+
+  return { width: pair(width * facteur), height: pair(height * facteur) };
+}
+
 /// Dernier échec de lancement, gardé pour l'écran de diagnostic.
 let lastFailure = null;
 
@@ -360,6 +388,7 @@ async function launch(pkg, once = null) {
   // réglages mémorisés pour cette application, puis le choix d'un seul
   // lancement.
   const settings = { ...store.all, ...store.overrideFor(pkg), ...(once || {}) };
+  Object.assign(settings, displaySize(settings));
   let session;
   try {
     session = await device.launchApp(current.serial, app_, settings, {
@@ -398,6 +427,86 @@ function closeSession(id) {
   sessions.delete(id);
   broadcastSessions();
   return true;
+}
+
+// ── Diagnostic ──────────────────────────────────────────────────────────────
+
+async function gatherDiagnostic() {
+  const report = await device.diagnostics(current.serial);
+  report.aura = app.getVersion();
+  report.tools = await windows.tools();
+  report.log = log.chemin();
+  report.lastFailure = lastFailure;
+  return report;
+}
+
+/// Le rapport en texte brut. Assemblé ici plutôt que dans la page : deux
+/// fenêtres le demandent, et il ne doit exister qu'une seule version.
+function formatDiagnostic(d) {
+  const lignes = [
+    `Aura ${d.aura} — ${d.platform}${d.appimage ? ' (AppImage)' : ''}`,
+    `Session : ${d.session} — bureau ${d.desktop} — affichage ${d.display}`,
+    `Moteur : ${d.engine || `INTROUVABLE — ${d.engineError}`}`,
+    `adb : ${d.adb}`,
+    `Appareil : ${d.device || 'aucun'}`,
+  ];
+  if (d.deviceWarning) lignes.push(`⚠ ${d.deviceWarning}`);
+
+  const outils = d.tools || {};
+  lignes.push(
+    outils.raison
+      ? `Fenêtres : ${outils.raison}`
+      : `Fenêtres : wmctrl ${outils.wmctrl ? 'oui' : 'non'}, xdotool ${outils.xdotool ? 'oui' : 'non'}, python3-xlib ${outils.xlib ? 'oui' : 'non'}`
+  );
+  lignes.push(`Journal : ${d.log || 'désactivé'}`);
+
+  const f = d.lastFailure;
+  if (f) {
+    lignes.push('', `Dernier échec — ${f.name} (${f.package})`, f.error);
+    if (f.reason) lignes.push(`Message de scrcpy : ${f.reason}`);
+    if (f.hint) lignes.push(`Cause probable : ${f.hint}`);
+    if (f.command) lignes.push(`Commande : ${f.command}`);
+    if (f.tail) lignes.push('Sortie de scrcpy :', f.tail);
+  } else {
+    lignes.push('', 'Aucun échec de lancement enregistré depuis le démarrage.');
+  }
+  return lignes.join('\n');
+}
+
+let diagWin = null;
+
+/// Le diagnostic mérite une vraie fenêtre.
+///
+/// Le widget fait 520 px de large et ajuste sa hauteur à son contenu : un
+/// rapport de trente lignes n'y est pas lisible, et on ne peut pas
+/// l'agrandir. Ici, cadre normal, taille libre, texte sélectionnable.
+function openDiagnostic() {
+  if (diagWin && !diagWin.isDestroyed()) {
+    diagWin.show();
+    diagWin.focus();
+    return diagWin;
+  }
+
+  diagWin = new BrowserWindow({
+    width: 760,
+    height: 620,
+    minWidth: 420,
+    minHeight: 320,
+    title: 'Aura — diagnostic',
+    backgroundColor: '#0d0f16',
+    autoHideMenuBar: true,
+    icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  diagWin.loadFile(path.join(__dirname, '..', 'ui', 'diagnostic.html'));
+  diagWin.on('closed', () => { diagWin = null; });
+  return diagWin;
 }
 
 // ── Canaux ──────────────────────────────────────────────────────────────────
@@ -439,14 +548,11 @@ function registerIpc() {
 
   ipcMain.handle('app:launch', async (_e, pkg, once) => launch(pkg, once));
 
-  ipcMain.handle('diag:get', async () => {
-    const report = await device.diagnostics(current.serial);
-    report.aura = app.getVersion();
-    report.tools = await windows.tools();
-    report.log = log.chemin();
-    report.lastFailure = lastFailure;
-    return report;
-  });
+  ipcMain.handle('diag:text', async () => formatDiagnostic(await gatherDiagnostic()));
+
+  ipcMain.handle('diag:window', async () => { openDiagnostic(); return true; });
+
+  ipcMain.handle('diag:get', async () => gatherDiagnostic());
 
   ipcMain.handle('diag:log', async () => log.tail(300));
 

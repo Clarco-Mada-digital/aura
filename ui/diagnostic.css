@@ -1,0 +1,72 @@
+/* Fenêtre de diagnostic : une page à lire, pas un widget.
+   Elle a donc un cadre, une taille libre, et du texte sélectionnable. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  padding: 20px 22px 28px;
+  background: #0d0f16;
+  color: #e9edf8;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+h1 { font-size: 19px; font-weight: 600; letter-spacing: 0.2px; margin-right: auto; }
+
+h2 {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: rgba(233, 237, 248, 0.5);
+  margin: 22px 0 8px;
+}
+
+.hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+.lead { color: rgba(233, 237, 248, 0.55); font-size: 13px; max-width: 62ch; }
+
+.actions { display: flex; gap: 8px; }
+
+button {
+  padding: 7px 13px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+button:hover { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.22); }
+button.primary { background: linear-gradient(120deg, #7c5cff, #38d6d6); border-color: transparent; color: #0d0f16; font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+pre {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  /* Le rapport tient sur des lignes longues : on les replie plutôt que
+     d'imposer un défilement horizontal, qui rend la lecture pénible. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+#journal { max-height: 40vh; overflow: auto; color: rgba(233, 237, 248, 0.72); }

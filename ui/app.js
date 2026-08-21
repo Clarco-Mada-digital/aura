@@ -678,7 +678,7 @@ function renderSettings() {
     });
     el.onchange = async () => {
       const raw = el.value;
-      const value = /^\d+$/.test(raw) ? Number(raw) : raw;
+      const value = /^-?\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : raw;
       state.settings = await window.aura.saveSettings({ [key]: value });
     };
     return el;
@@ -700,6 +700,8 @@ function renderSettings() {
   group('Fenêtres d’application');
   field('Définition', "Taille de l'écran virtuel Android", size);
   field('Densité', '160 ppp donne une mise en page de tablette', select('dpi', [[120, '120 ppp'], [160, '160 ppp'], [240, '240 ppp'], [320, '320 ppp']]));
+  field('Taille à l’ouverture', "Part de l'écran occupée par la fenêtre",
+    select('windowScale', [[0.35, 'Petite — 35 %'], [0.45, 'Réduite — 45 %'], [0.55, 'Moyenne — 55 %'], [0.7, 'Grande — 70 %'], [0.85, 'Très grande — 85 %']]));
   field('Suivre la fenêtre', "L'écran Android se redimensionne avec la fenêtre", toggle('flex'));
   field('Garder actif', "L'écran virtuel ne s'éteint pas", toggle('keepActive'));
   field('Son de l’appareil', 'Redirige l’audio vers l’ordinateur (Android 11+)', toggle('audio'));
@@ -792,37 +794,17 @@ function renderSettings() {
   // faut pour comprendre — et surtout pour le recopier dans un signalement.
   group('Diagnostic');
 
-  const sortie = document.createElement('pre');
-  sortie.className = 'diag';
-  sortie.hidden = true;
-
   const voir = document.createElement('button');
   voir.className = 'ghost';
-  voir.textContent = 'Analyser';
-  voir.onclick = async () => {
-    voir.disabled = true;
-    voir.textContent = 'Analyse…';
-    try {
-      sortie.textContent = await diagnosticText();
-      sortie.hidden = false;
-    } catch (err) {
-      sortie.textContent = String(err.message || err);
-      sortie.hidden = false;
-    }
-    voir.disabled = false;
-    voir.textContent = 'Analyser';
-    fit();
-  };
-
+  voir.textContent = 'Ouvrir';
+  voir.onclick = () => window.aura.openDiagnostic();
   field('État du système', 'Moteur, appareil, session graphique, dernier échec', voir);
-  body.appendChild(sortie);
 
   const copier = document.createElement('button');
   copier.className = 'ghost';
   copier.textContent = 'Copier';
   copier.onclick = async () => {
-    const texte = sortie.textContent || (await diagnosticText());
-    await navigator.clipboard.writeText(texte);
+    await navigator.clipboard.writeText(await window.aura.diagnosticText());
     toast('Diagnostic copié');
   };
   field('Rapport', 'À coller dans un signalement', copier);
@@ -837,36 +819,7 @@ function renderSettings() {
   field('Journal', 'Chaque lancement et chaque erreur y sont écrits', journal);
 }
 
-/// Le rapport complet, en texte brut prêt à coller.
-async function diagnosticText() {
-  const d = await window.aura.diagnostics();
-  const lignes = [
-    `Aura ${d.aura} — ${d.platform}${d.appimage ? ' (AppImage)' : ''}`,
-    `Session : ${d.session} — bureau ${d.desktop} — affichage ${d.display}`,
-    `Moteur : ${d.engine || `INTROUVABLE — ${d.engineError}`}`,
-    `adb : ${d.adb}`,
-    `Appareil : ${d.device || 'aucun'}`,
-  ];
-  if (d.deviceWarning) lignes.push(`⚠ ${d.deviceWarning}`);
 
-  const outils = d.tools || {};
-  lignes.push(
-    outils.raison
-      ? `Fenêtres : ${outils.raison}`
-      : `Fenêtres : wmctrl ${outils.wmctrl ? 'oui' : 'non'}, xdotool ${outils.xdotool ? 'oui' : 'non'}, python3-xlib ${outils.xlib ? 'oui' : 'non'}`
-  );
-  lignes.push(`Journal : ${d.log || 'désactivé'}`);
-
-  if (d.lastFailure) {
-    const f = d.lastFailure;
-    lignes.push('', `Dernier échec — ${f.name} (${f.package})`, f.error);
-    if (f.reason) lignes.push(`Message de scrcpy : ${f.reason}`);
-    if (f.hint) lignes.push(`Cause probable : ${f.hint}`);
-    if (f.command) lignes.push(`Commande : ${f.command}`);
-    if (f.tail) lignes.push('Sortie de scrcpy :', f.tail);
-  }
-  return lignes.join('\n');
-}
 
 function collected() {
   if (!state.collectedAt) return 'jamais collecté';
@@ -1335,7 +1288,7 @@ window.aura.onSessions((list) => { state.sessions = list; renderSessions(); });
 window.aura.onFailure((info) => {
   const detail = info.hint || info.reason || info.error || 'échec inconnu';
   toast(`${info.name} ne s'est pas ouverte — ${detail} (cliquez pour le détail)`, true, () => {
-    openPanel('settings');
+    window.aura.openDiagnostic();
   });
 });
 

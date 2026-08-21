@@ -584,20 +584,3 @@ body { padding:0.625rem; }
 .toast.clickable { cursor: pointer; }
 .toast.clickable:hover { border-color: rgba(255, 255, 255, 0.35); }
 
-/* Rapport de diagnostic : du texte brut, lisible et sélectionnable. */
-.diag {
-  margin:0.25rem 2px 0.625rem;
-  padding:0.625rem 0.75rem;
-  max-height:15rem;
-  overflow: auto;
-  border-radius:0.625rem;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-family: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
-  font-size:0.6875rem;
-  line-height:1.5;
-  color: rgba(233, 238, 255, 0.86);
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
-}

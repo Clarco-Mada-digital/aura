@@ -105,6 +105,26 @@ laisser sans raccourci.
 Le défaut évite les combinaisons courantes : `Ctrl+Espace` appartient aux
 méthodes de saisie, `Alt+Espace` au menu de fenêtre.
 
+### La taille des fenêtres d'application
+
+Une fenêtre d'application fait exactement la taille de son écran virtuel :
+`--new-display=1280x800` ouvre un pavé de 1280 px de large. C'est beaucoup pour
+une application de téléphone posée à côté de son travail.
+
+`--window-width` ne règle pas le problème : scrcpy le refuse dès que
+`--flex-display` est actif, puisque c'est alors la fenêtre qui commande la
+définition. La définition réglée dans les préférences donne donc la **forme**
+et le maximum, et Aura la réduit jusqu'à tenir dans la part d'écran demandée —
+*Réglages → Taille à l'ouverture*, de 35 % à 85 % de l'écran de travail.
+
+Le plancher s'applique au facteur de réduction, pas à chaque dimension : en
+bornant les côtés séparément, une application en portrait se retrouverait
+déformée aux petites tailles. En dessous de 360 px sur son petit côté, une
+application Android n'a de toute façon plus de mise en page utilisable.
+
+Sur un écran de 1920 × 1032, à 55 % : une application en paysage s'ouvre en
+908 × 568, une application en portrait en 360 × 576.
+
 ### Une interface qui change vraiment de taille
 
 Redimensionner une fenêtre ne suffit pas à redimensionner ce qu'elle contient.
@@ -269,11 +289,14 @@ Aura traite donc l'échec comme un événement à part entière :
   autorisé, aucun serveur graphique joignable, bibliothèques incompatibles ;
 - tout part dans `~/.config/aura/aura.log`, avec la ligne de commande exacte.
 
-**Réglages → Diagnostic → Analyser** rassemble en un écran ce qui diffère d'une
-machine à l'autre : version de scrcpy et son chemin, version d'`adb`, appareil
-et niveau d'API, type de session graphique, outils de fenêtrage présents, et le
-dernier échec avec sa sortie. Le bouton *Copier* met le tout dans le
-presse-papiers, prêt à coller dans un signalement.
+**Réglages → Diagnostic → Ouvrir** ouvre une fenêtre à part — cadre normal,
+taille libre, texte sélectionnable — avec ce qui diffère d'une machine à
+l'autre : version de scrcpy et son chemin, version d'`adb`, appareil et niveau
+d'API, type de session graphique, outils de fenêtrage présents, le dernier
+échec avec sa sortie, et les trois cents dernières lignes du journal. Un
+rapport de trente lignes n'est pas lisible dans un widget de 520 px qui ajuste
+sa hauteur à son contenu : c'est le genre de page qu'on lit en grand et qu'on
+copie. *Copier le rapport* met le tout dans le presse-papiers.
 
 Deux causes reviennent souvent :
 

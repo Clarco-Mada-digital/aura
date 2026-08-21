@@ -22,6 +22,14 @@ const DEFAULTS = {
   bitrate: '8M',
   maxFps: 60,
   noSystemDecorations: false,
+  // Part de l'écran occupée par la fenêtre d'application à son ouverture.
+  //
+  // La définition de l'écran virtuel (1280 × 800) décide de la *netteté* ; ce
+  // réglage décide de la *taille à l'écran*. Sans lui, une fenêtre s'ouvrait
+  // à sa définition pixel pour pixel — soit un pavé de 1280 px de large, bien
+  // plus gros que ce qu'on attend d'une application de téléphone posée à côté
+  // de son travail.
+  windowScale: 0.55,
 
   // Lanceur.
   // Ctrl+Espace appartient aux méthodes de saisie, Alt+Espace au menu de

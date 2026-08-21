@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('aura', {
   quit: () => invoke('window:quit'),
   refreshWallpaper: () => invoke('wallpaper:refresh'),
   diagnostics: () => invoke('diag:get'),
+  diagnosticText: () => invoke('diag:text'),
+  openDiagnostic: () => invoke('diag:window'),
   logTail: () => invoke('diag:log'),
   openLog: () => invoke('diag:open'),
 

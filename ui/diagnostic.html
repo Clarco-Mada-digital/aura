@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Aura — diagnostic</title>
+    <link rel="stylesheet" href="diagnostic.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Diagnostic</h1>
+      <div class="actions">
+        <button id="btnRefresh">Actualiser</button>
+        <button id="btnLog">Ouvrir le journal</button>
+        <button id="btnCopy" class="primary">Copier le rapport</button>
+      </div>
+    </header>
+
+    <p class="lead">
+      À copier tel quel dans un signalement. Rien n'est envoyé nulle part : le
+      rapport reste sur cette machine tant que vous ne le collez pas vous-même.
+    </p>
+
+    <section>
+      <h2>État du système</h2>
+      <pre id="rapport">Analyse en cours…</pre>
+    </section>
+
+    <section>
+      <h2>Journal <span class="hint">— les 300 dernières lignes</span></h2>
+      <pre id="journal">…</pre>
+    </section>
+
+    <script src="diagnostic.js"></script>
+  </body>
+</html>
