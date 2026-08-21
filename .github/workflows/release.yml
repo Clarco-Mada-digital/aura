@@ -8,6 +8,15 @@
 # Le résultat est un **brouillon** de publication : on relit, on complète les
 # notes, puis on publie. Un brouillon peut être supprimé, une version publiée
 # beaucoup moins facilement.
+#
+# Deux temps, et c'est délibéré. Les trois machines construisent sans rien
+# publier, puis un dernier travail rassemble tout et le dépose d'un seul geste.
+# En laissant chaque machine publier pour elle-même, on s'expose à deux
+# ennuis : les trois se disputent la création de la même publication, et
+# surtout, si quelqu'un publie le brouillon avant la fin, les retardataires
+# n'ont plus où déposer leurs fichiers — electron-builder refuse d'écrire dans
+# une publication déjà publiée, sans faire échouer le travail pour autant. Les
+# paquets Windows manquaient à l'appel pour cette raison exacte.
 
 name: Publier une version
 
@@ -37,13 +46,13 @@ jobs:
         include:
           - os: ubuntu-latest
             nom: Linux (AppImage + deb)
-            commande: npx electron-builder --linux AppImage deb --publish always
+            cible: --linux
           - os: windows-latest
             nom: Windows (installeur + portable)
-            commande: npx electron-builder --win nsis portable --publish always
+            cible: --win
           - os: macos-latest
             nom: macOS (dmg + zip, Intel et Apple Silicon)
-            commande: npx electron-builder --mac dmg zip --publish always
+            cible: --mac
 
     steps:
       - uses: actions/checkout@v4
@@ -66,22 +75,23 @@ jobs:
       - name: Vérifier la syntaxe
         run: npm test --if-present
 
-      - name: Construire et téléverser
-        run: ${{ matrix.commande }}
+      - name: Construire
+        # Aucune cible n'est nommée ici : celles de package.json font foi, avec
+        # leurs architectures. Les nommer en ligne de commande écrase la liste
+        # des architectures et ne construit plus que celle de la machine — ce
+        # qui privait macOS de sa version Intel.
+        run: npx electron-builder ${{ matrix.cible }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Sans certificat, on ne signe pas — et on le dit plutôt que de
           # laisser electron-builder chercher une identité absente.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Conserver les paquets comme artefacts
-        # Filet de sécurité : si le téléversement vers la publication échoue,
-        # les fichiers restent récupérables depuis l'exécution.
-        if: always()
+      - name: Conserver les paquets
         uses: actions/upload-artifact@v4
         with:
           name: aura-${{ runner.os }}
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
           path: |
             dist/*.AppImage
@@ -89,3 +99,56 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
+
+  publish:
+    name: Déposer la publication
+    needs: build
+    # `always()` : si Windows a échoué, Linux et macOS méritent quand même
+    # d'être publiés.
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Récupérer les paquets
+        uses: actions/download-artifact@v4
+        with:
+          path: paquets
+          merge-multiple: true
+
+      - name: Numéro de version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.version }}" ]; then
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Déposer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          ls -la paquets
+
+          # Une publication qui existe déjà est complétée, pas recréée : on
+          # peut relancer le flux sans repartir de zéro.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "Aura $TAG" \
+              --notes "Paquets pour Linux, Windows et macOS. Voir le journal des modifications."
+          fi
+
+          # `--clobber` remplace un fichier de même nom : une reprise après
+          # échec ne laisse pas deux versions du même paquet.
+          gh release upload "$TAG" paquets/* --clobber
+
+          echo "Déposé sur $TAG :"
+          gh release view "$TAG" --json assets --jq '.assets[].name'

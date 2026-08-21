@@ -239,18 +239,34 @@ jour de scrcpy ne dépende pas de celle d'Aura.
 ```
 
 Le script vérifie que le dossier de travail est propre, pose le numéro de
-version, l'étiquette, et pousse. C'est l'étiquette qui déclenche le flux
-`.github/workflows/release.yml` : trois machines — Ubuntu, Windows, macOS —
-construisent leurs paquets et les déposent sur la **même publication**, laissée
-en **brouillon**. On relit les notes, puis on publie.
+version, l'étiquette, et pousse. Si le numéro demandé est déjà celui du paquet,
+il pose l'étiquette seule au lieu d'échouer. C'est l'étiquette qui déclenche
+`.github/workflows/release.yml`.
 
-Rien ne se construit à chaque poussée : une version ne sert qu'au moment où on
-la distribue. Le flux se déclenche aussi à la main depuis l'onglet *Actions*
+Le flux se déroule en deux temps, et c'est délibéré :
+
+1. **Trois machines construisent** — Ubuntu, Windows, macOS — sans rien
+   publier, et déposent leurs paquets comme artefacts.
+2. **Un dernier travail rassemble tout** et le dépose d'un seul geste sur une
+   publication laissée en **brouillon**.
+
+En laissant chaque machine publier pour elle-même, on s'expose à deux ennuis :
+les trois se disputent la création de la même publication, et surtout, si
+quelqu'un publie le brouillon avant la fin, les retardataires n'ont plus où
+déposer leurs fichiers — electron-builder refuse d'écrire dans une publication
+déjà publiée, sans faire échouer le travail pour autant. Les paquets Windows de
+la v0.0.1 manquaient à l'appel pour cette raison exacte.
+
+Les cibles ne sont pas nommées en ligne de commande non plus : celles de
+`package.json` font foi. Les nommer écrase la liste des **architectures** et ne
+construit plus que celle de la machine, ce qui privait macOS de sa version
+Intel.
+
+Le flux se déclenche aussi à la main depuis l'onglet *Actions*
 (« Run workflow »), avec un numéro de version optionnel — pratique pour
-essayer la chaîne sans poser d'étiquette.
-
-Si un système échoue, les deux autres aboutissent quand même, et les paquets
-construits restent récupérables comme artefacts de l'exécution.
+essayer la chaîne sans poser d'étiquette. Une publication existante est
+complétée, jamais recréée : on peut relancer après un échec sans repartir de
+zéro.
 
 ### Variables d'environnement
 
