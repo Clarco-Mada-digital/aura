@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Aura
+Comment=Vos applications Android, sur votre bureau
+Exec=sh -c "cd PROJET && npm start"
+Icon=PROJET/assets/icon.png
+Terminal=false
+Categories=Utility;
+StartupNotify=false

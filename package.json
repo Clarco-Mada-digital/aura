@@ -1,0 +1,146 @@
+{
+  "name": "aura",
+  "version": "0.1.0",
+  "description": "Un widget de bureau pour ouvrir vos applications Android, propulsé par scrcpy.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist": "electron-builder --linux AppImage deb",
+    "pack": "electron-builder --linux dir",
+    "dist:linux": "electron-builder --linux AppImage deb",
+    "dist:win": "electron-builder --win nsis portable",
+    "dist:mac": "electron-builder --mac dmg zip",
+    "release": "bash scripts/release.sh",
+    "test": "node --check src/main.js && node --check src/device.js && node --check src/preload.js && node --check src/store.js && node --check src/icons.js && node --check src/arsc.js && node --check src/install.js && node --check src/windows.js && node --check src/log.js && node --check ui/app.js"
+  },
+  "author": {
+    "name": "Mada Digital",
+    "email": "it-ia@mada-digital.net"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "net.madadigital.aura",
+    "productName": "Aura",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "ui/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Utility",
+      "synopsis": "Vos applications Android sur votre bureau",
+      "description": "Un widget de bureau : une barre de recherche, vos applications Android épinglées, et les notifications du téléphone. Chaque application s'ouvre dans sa propre fenêtre, sur son propre écran virtuel Android, via scrcpy.",
+      "desktop": {
+        "entry": {
+          "StartupNotify": "false",
+          "Terminal": "false",
+          "Keywords": "android;scrcpy;adb;lanceur;launcher;"
+        }
+      },
+      "maintainer": "Mada Digital <it-ia@mada-digital.net>",
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libsecret-1-0"
+      ],
+      "recommends": [
+        "adb"
+      ]
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-${arch}.AppImage"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Clarco-Mada-digital",
+        "repo": "aura",
+        "releaseType": "draft"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Aura"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  },
+  "homepage": "https://mada-digital.net",
+  "desktopName": "aura.desktop",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Clarco-Mada-digital/aura.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Clarco-Mada-digital/aura/issues"
+  }
+}

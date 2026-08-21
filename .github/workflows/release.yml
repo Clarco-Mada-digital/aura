@@ -1,0 +1,91 @@
+# Publication d'une version.
+#
+# Rien ne se construit à chaque poussée : ce serait long, coûteux, et sans
+# intérêt puisqu'un binaire n'est utile qu'au moment où on le distribue. Le
+# flux se déclenche donc à la main (« Run workflow ») ou par une étiquette
+# `v*`, et produit les trois systèmes d'un coup.
+#
+# Le résultat est un **brouillon** de publication : on relit, on complète les
+# notes, puis on publie. Un brouillon peut être supprimé, une version publiée
+# beaucoup moins facilement.
+
+name: Publier une version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à publier (ex. 0.2.0) — laisser vide pour garder celle de package.json"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.nom }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Un système qui échoue ne doit pas emporter les deux autres : mieux vaut
+      # une publication partielle qu'aucune.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            nom: Linux (AppImage + deb)
+            commande: npx electron-builder --linux AppImage deb --publish always
+          - os: windows-latest
+            nom: Windows (installeur + portable)
+            commande: npx electron-builder --win nsis portable --publish always
+          - os: macos-latest
+            nom: macOS (dmg + zip, Intel et Apple Silicon)
+            commande: npx electron-builder --mac dmg zip --publish always
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Fixer la version demandée
+        # `npm version` sans étiquette ni validation : le dépôt n'est pas
+        # modifié, seul le paquet construit porte le numéro.
+        if: ${{ inputs.version != '' }}
+        run: npm version ${{ inputs.version }} --no-git-tag-version --allow-same-version
+        shell: bash
+
+      - name: Vérifier la syntaxe
+        run: npm test --if-present
+
+      - name: Construire et téléverser
+        run: ${{ matrix.commande }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Sans certificat, on ne signe pas — et on le dit plutôt que de
+          # laisser electron-builder chercher une identité absente.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Conserver les paquets comme artefacts
+        # Filet de sécurité : si le téléversement vers la publication échoue,
+        # les fichiers restent récupérables depuis l'exécution.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-${{ runner.os }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip

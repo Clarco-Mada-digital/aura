@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Aura</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Photographie floutée du bureau, posée sous le verre. -->
+    <div class="wallpaper" id="wallpaper" aria-hidden="true"></div>
+
+    <main class="shell">
+      <header class="bar" id="dragbar">
+        <div class="device" id="device">
+          <span class="dot" id="dot"></span>
+          <span class="device-name" id="deviceName">Recherche…</span>
+          <span class="device-meta" id="deviceMeta"></span>
+        </div>
+
+        <div class="bar-actions">
+          <button class="icon-btn" id="btnNotifs" title="Notifications (Ctrl+N)" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.4 16h15.2L18 12.6V9a6 6 0 0 0-6-6Z"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0"/></svg>
+            <span class="badge" id="notifBadge" hidden>0</span>
+          </button>
+          <button class="icon-btn" id="btnPin" title="Épingler la fenêtre" aria-label="Épingler">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3l7 7-3 1-1.5 4.5L12 20l-3-6-5-2 4.5-2L11 6l3-3Z"/></svg>
+          </button>
+          <button class="icon-btn" id="btnSettings" title="Réglages (Ctrl+,)" aria-label="Réglages">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.5 4.5l1.7 1.7M17.8 17.8l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.5 19.5l1.7-1.7M17.8 6.2l1.7-1.7"/></svg>
+          </button>
+          <button class="icon-btn close" id="btnClose" title="Masquer (Échap)" aria-label="Masquer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="search">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input
+          id="query"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Rechercher une application…"
+          aria-label="Rechercher une application"
+        />
+        <kbd class="hint" id="hotkeyHint">Ctrl Alt Espace</kbd>
+      </div>
+
+      <!-- Au repos : les favoris seuls. En recherche : les résultats. -->
+      <section class="stage">
+        <div class="dock" id="dock"></div>
+        <div class="hits" id="hits" hidden></div>
+        <div class="empty" id="empty" hidden></div>
+      </section>
+
+      <footer class="foot">
+        <div class="running" id="running"></div>
+        <div class="foot-keys" id="footKeys">
+          <span><kbd>⏎</kbd>ouvrir</span>
+          <span><kbd>Ctrl+D</kbd>favori</span>
+        </div>
+      </footer>
+
+      <!-- Volet des notifications -->
+      <aside class="panel" id="panelNotifs" hidden>
+        <div class="panel-head">
+          <h2>Notifications</h2>
+          <div class="panel-actions">
+            <button class="ghost" id="btnClearAll" title="Écarter toutes les notifications" hidden>Tout écarter</button>
+            <button class="ghost" id="btnShade" title="Ouvrir le volet sur le téléphone">Téléphone</button>
+            <button class="icon-btn" id="btnCloseNotifs" aria-label="Fermer le volet">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="panel-body" id="notifList"></div>
+      </aside>
+
+      <!-- Volet des réglages -->
+      <aside class="panel" id="panelSettings" hidden>
+        <div class="panel-head">
+          <h2>Réglages</h2>
+          <button class="icon-btn" id="btnCloseSettings" aria-label="Fermer les réglages">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div class="panel-body" id="settingsBody"></div>
+      </aside>
+
+      <div class="toast" id="toast" hidden></div>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
