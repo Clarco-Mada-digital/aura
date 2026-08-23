@@ -284,6 +284,40 @@ function parseDisplayId(line) {
   return m ? Number(m[1]) : null;
 }
 
+/// Les options longues que ce binaire scrcpy connaît réellement.
+///
+/// Les distributions livrent des versions très variables : une 3.3.4 passe le
+/// seuil 3.0 exigé par les écrans virtuels, mais ignore des options plus
+/// récentes (--flex-display, --keep-active…) et meurt sur "unrecognized
+/// option" sans rien afficher. Plutôt que de maintenir une table de versions,
+/// on lit la sortie de --help : toute option absente est retirée de la ligne
+/// de commande, la fonctionnalité correspondante simplement inactive.
+let optionCache = null;
+async function supportedOptions(engine) {
+  if (optionCache && optionCache.path === engine.path) return optionCache.options;
+  const out = await run(engine.path, ['--help'], { timeout: 8000 });
+  const text = out.stdout + '\n' + out.stderr;
+  const options = new Set();
+  for (const m of text.matchAll(/(^|\s)--([a-z0-9-]+)/g)) options.add(`--${m[2]}`);
+  optionCache = { path: engine.path, options };
+  return options;
+}
+
+/// Retire les options que ce scrcpy ne connaît pas, et signale chacune.
+function filterArgs(args, supported, notes) {
+  const kept = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) { kept.push(arg); continue; }
+    const name = arg.split('=')[0];
+    if (supported.has(name)) { kept.push(arg); continue; }
+    notes.push(`${name} ignoré : non reconnu par cette version de scrcpy.`);
+    // Une option à valeur séparée (`--serial XYZ`) emporte son argument.
+    if (!arg.includes('=') && i + 1 < args.length && !args[i + 1].startsWith('--')) i++;
+  }
+  return kept;
+}
+
 /// Délai au-delà duquel un lancement qui n'a rien affiché est considéré perdu.
 const START_TIMEOUT = 45000;
 
@@ -331,14 +365,17 @@ let nextSessionId = 1;
 function launchApp(serial, app, settings, hooks = {}) {
   return new Promise(async (resolve, reject) => {
     let engine;
+    let args;
+    let notes = [];
     try {
       engine = await findEngine();
+      const supported = await supportedOptions(engine);
+      args = filterArgs(sessionArgs(serial, app, settings), supported, notes);
     } catch (err) {
       return reject(err);
     }
 
     const id = nextSessionId++;
-    const args = sessionArgs(serial, app, settings);
     let child;
     try {
       child = spawn(engine.path, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() });
@@ -353,7 +390,7 @@ function launchApp(serial, app, settings, hooks = {}) {
       displayId: null,
       startedAt: Date.now(),
       command: [engine.path, ...args],
-      log: [],
+      log: notes.map((n) => `[aura] ${n}`),
       child,
     };
 

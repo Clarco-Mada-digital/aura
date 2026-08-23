@@ -503,13 +503,24 @@ async function openMirror() {
 // jamais sur un écran virtuel. Sans miroir, on ne le verrait pas ; sans
 // surveillance, on ne saurait même pas qu'il sonne.
 
+// Sondage adaptatif : 3 s tant que la fenêtre est visible ou qu'un appel est
+// en cours (il faut voir sonner sans délai), 9 s sinon — la fenêtre masquée ne
+// mobilise pas adb et dumpsys pour rien, tout en restant réactive.
 const CALL_POLL = 3000;
+const CALL_POLL_HIDDEN = 9000;
 let callTimer = null;
 let callNow = null;
 
 function startCallWatch() {
   clearInterval(callTimer);
-  callTimer = setInterval(() => { pollCall().catch(() => {}); }, CALL_POLL);
+  let elapsed = 0;
+  callTimer = setInterval(() => {
+    elapsed += CALL_POLL;
+    const visible = win && !win.isDestroyed() && win.isVisible();
+    if (!visible && !callNow && elapsed < CALL_POLL_HIDDEN) return;
+    elapsed = 0;
+    pollCall().catch(() => {});
+  }, CALL_POLL);
 }
 
 async function pollCall() {

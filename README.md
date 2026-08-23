@@ -127,6 +127,13 @@ Le premier mode demande `--window-width`/`--window-height`, que scrcpy refuse
 dès que `--flex-display` est actif — puisque c'est alors la fenêtre qui
 commande la définition. D'où les deux chemins.
 
+Ces deux options, comme `--keep-active`, n'existent qu'à partir de **scrcpy
+4.0**. Une distribution qui livre une 3.x (Debian et ses dérivées comme LMDE,
+par exemple) passe le seuil des écrans virtuels mais les ignore : Aura lit la
+sortie de `scrcpy --help` du moteur trouvé et retire silencieusement ce qui
+n'y figure pas — la fenêtre s'ouvre, simplement sans suivi ni maintien d'écran
+allumé. Installer le moteur depuis les réglages restaure tout.
+
 *Réglages → Taille à l'ouverture* règle la part de l'écran de travail occupée,
 de 35 % à 85 %. Sur un écran de 1920 × 1032, à 55 %, un écran virtuel
 900 × 1600 s'ouvre dans une fenêtre de 319 × 567 : dix conversations visibles
@@ -401,6 +408,10 @@ Deux causes reviennent souvent :
   1.x ou 2.x, qui ne connaît pas `--new-display`. Installez le moteur depuis
   Aura : la version officielle 4.1 sera utilisée sans toucher à celle du
   système.
+- **scrcpy 3.x sans les options récentes.** Une 3.x ouvre les écrans virtuels
+  mais ignore `--flex-display` et `--keep-active` (scrcpy 4.0+). Aura retire
+  ces options plutôt que de laisser scrcpy mourir sur `unrecognized option` ;
+  une note dans le journal le signale.
 
 Aura nettoie aussi l'environnement transmis à scrcpy : lancée en AppImage, elle
 hérite d'un `LD_LIBRARY_PATH` et d'un `PATH` qui pointent vers ses propres
@@ -441,6 +452,7 @@ Mesures faites sur l'appareil de référence (Galaxy A71, USB 2.0) :
 | Sondage des notifications | 226 octets / 0,05 s toutes les 20 s |
 | Détail des notifications | 1,1 Mo / 0,33 s, seulement quand la liste a changé |
 | État de l'appareil | ~0,17 s, toutes les 60 s, sans redessin si rien n'a bougé |
+| Appels | toutes les 3 s fenêtre visible ou appel en cours, 9 s sinon |
 | Inventaire des applications | ~20 s, une fois, puis cache disque |
 | Icône, première extraction | 0,8 à 7 s selon l'APK, puis instantané |
 
@@ -455,6 +467,29 @@ courant.
 **Rien n'est redessiné sans raison.** La reconnexion périodique compare l'état
 avant de reconstruire l'interface : sans cela, le dock clignoterait chaque
 minute et perdrait la sélection en cours.
+
+**Le sondage d'appels suit l'usage.** Chaque tick lance un processus `adb` et
+fait générer au téléphone un `dumpsys telecom` de ~170 ko. Tant que la fenêtre
+est visible — ou qu'un appel est en cours — il a lieu toutes les 3 s pour ne
+pas rater une sonnerie ; fenêtre masquée et ligne calme, il tombe à 9 s, soit
+les deux tiers de trafic USB et de réveils du téléphone en moins pendant une
+journée de travail où Aura tourne en fond.
+
+### Ce qui coûte quand une application est ouverte
+
+La dépense dominante n'est pas Aura mais le décodage vidéo de chaque fenêtre
+scrcpy. Trois réglages y pourvoient directement :
+
+- **Images par seconde** (`maxFps`) : passer de 120 à 60 divise à peu près le
+  travail de décodage ; pour lire des messages, 30 suffisent.
+- **Débit** (`bitrate`) : 24 Mbit/s est un réglage « qualité maximale » ; 8 Mbit/s
+  par défaut reste net sur une fenêtre réduite.
+- **Nombre de fenêtres** : chaque application ouverte a son propre décodeur.
+  Fermer une vignette libère réellement un flux h264/h265.
+
+Sur une machine modeste, le fond flouté (`backdrop-filter`) peut aussi se
+ressentir : le désactiver dans les réglages supprime une couche de compositing
+graphique permanente.
 
 Le poste de dépense restant est Electron lui-même. Une réimplémentation sur
 Tauri — la pile d'OpenDex — descendrait vers 50 Mo, au prix d'une réécriture du

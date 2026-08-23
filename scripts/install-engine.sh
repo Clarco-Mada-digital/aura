@@ -24,13 +24,14 @@ case "$(uname -m)" in
   *) echo "Architecture non prise en charge : $(uname -m)" >&2; exit 1 ;;
 esac
 
-# Un scrcpy déjà installé ailleurs et assez récent rend le téléchargement
-# inutile : Aura sait aussi utiliser celui d'OpenDex ou celui du PATH.
+# Un scrcpy 4+ déjà installé ailleurs rend le téléchargement inutile : Aura
+# sait aussi utiliser celui d'OpenDex ou celui du PATH. Une 3.x ne suffit pas :
+# --flex-display et --keep-active n'existent qu'à partir de la 4.0.
 for candidate in "$ENGINE_DIR/scrcpy" "${XDG_DATA_HOME:-$HOME/.local/share}/opendex/engine/scrcpy" "$(command -v scrcpy || true)"; do
   [ -x "$candidate" ] || continue
-  found="$("$candidate" --version 2>/dev/null | head -1 | awk '{print $2}' || true)"
+  found="$($candidate --version 2>/dev/null | head -1 | awk '{print $2}' || true)"
   major="${found%%.*}"
-  if [ -n "$major" ] && [ "$major" -ge 3 ] 2>/dev/null; then
+  if [ -n "$major" ] && [ "$major" -ge 4 ] 2>/dev/null; then
     echo "scrcpy $found est déjà utilisable : $candidate"
     exit 0
   fi
