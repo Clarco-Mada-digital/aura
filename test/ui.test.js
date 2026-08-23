@@ -3,6 +3,9 @@
 // pilote l'interface par événements réels. Objectif : que les bugs d'interaction
 // (menu refermé à l'instant où il s'ouvre, pastille rognée…) soient vus ici et
 // plus seulement à la main.
+//
+// Aucun délai fixe : tout attend une condition observable. Les machines de CI
+// (Windows notamment) sont trop lentes pour des `setTimeout(10)` fiables.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -27,6 +30,8 @@ const SETTINGS = {
   mirrorOnCall: false, autoUpdate: false,
 };
 
+const DEVICE = { serial: 'TEST', model: 'Test', android: '14', battery: 80, charging: false };
+
 /// Une instance de l'interface, avec un pont `aura` qui enregistre les ordres.
 async function makeApp(t, overrides = {}) {
   const dom = new JSDOM(html, {
@@ -43,8 +48,8 @@ async function makeApp(t, overrides = {}) {
   const calls = [];
   const ok = (value) => () => Promise.resolve(value);
   const aura = {
-    bootstrap: ok({ settings: SETTINGS, device: { serial: 'TEST', model: 'Test', android: '14', battery: 80, charging: false }, engine: null, error: null, apps: [], collectedAt: null, version: 'test', sessions: [] }),
-    refreshDevice: () => { calls.push(['refreshDevice']); return Promise.resolve({ device: { serial: 'TEST', model: 'Test', android: '14', battery: 80, charging: false }, error: null, apps: [], collectedAt: null }); },
+    bootstrap: ok({ settings: SETTINGS, device: DEVICE, engine: null, error: null, apps: [], collectedAt: null, version: 'test', sessions: [] }),
+    refreshDevice: () => { calls.push(['refreshDevice']); return Promise.resolve({ device: DEVICE, error: null, apps: [], collectedAt: null }); },
     refreshApps: ok({ apps: [], collectedAt: null }),
     engineTarget: ok(null),
     callState: ok(null),
@@ -53,7 +58,7 @@ async function makeApp(t, overrides = {}) {
     notificationKeys: ok([]),
     quickState: ok(null),
     devices: ok([]),
-    selectDevice: ok({ device: null, error: null, apps: [], collectedAt: null }),
+    selectDevice: ok({ device: DEVICE, error: null, apps: [], collectedAt: null }),
     saveSettings: (patch) => { calls.push(['saveSettings', patch]); return Promise.resolve({ ...SETTINGS, ...patch }); },
     hide: () => { calls.push(['hide']); return Promise.resolve(); },
     openMirror: () => { calls.push(['openMirror']); return Promise.resolve(); },
@@ -69,13 +74,25 @@ async function makeApp(t, overrides = {}) {
   window.aura = aura;
 
   window.eval(appJs);
-  // Laisse boot() et ses micro-tâches se dérouler.
-  await new Promise((r) => setTimeout(r, 30));
+  // boot() est terminé quand le premier rendu a posé le compteur d'appareils
+  // sur le pilote — un signal observable, pas une durée devinée.
+  await waitFor(window, () => 'count' in window.document.getElementById('device').dataset, 'boot');
 
   return { dom, window, aura, calls };
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 10));
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+/// Attend qu'une condition sur le DOM soit vraie. Les délais fixes rendent les
+/// tests instables sur une machine lente (CI) : on sonde, avec un plafond.
+async function waitFor(window, condition, what = 'condition') {
+  const start = Date.now();
+  for (;;) {
+    if (condition()) return;
+    if (Date.now() - start > 5000) throw new Error(`délai dépassé : ${what}`);
+    await tick();
+  }
+}
 
 /// Clic réaliste : bulle jusqu'au document, comme un vrai clic de souris.
 const click = (window, el) =>
@@ -86,44 +103,42 @@ const click = (window, el) =>
 test('le menu ⋯ s\u2019ouvre au clic et RESTE ouvert (régression : refermé par son propre clic)', async (t) => {
   const { window } = await makeApp(t);
   click(window, window.document.getElementById('btnControl'));
-  await tick();
+  await waitFor(window, () => window.document.querySelector('.menu.control'), 'ouverture du menu');
 
   const menu = window.document.querySelector('.menu.control');
-  assert.ok(menu, 'le centre de contrôle doit être ouvert après le clic');
-  assert.ok(menu.isConnected, 'et ne doit pas avoir été refermé par la propagation du clic');
+  // Redonne une chance au clic de finir de remonter : le bug historique
+  // refermait le menu après coup, pas instantanément.
+  await tick();
+  await tick();
+  assert.ok(menu.isConnected, 'le menu ne doit pas avoir été refermé par la propagation du clic');
 });
 
 test('un clic passif dans le menu ne le referme pas ; un clic dehors oui', async (t) => {
   const { window } = await makeApp(t);
   const doc = window.document;
   click(window, doc.getElementById('btnControl'));
-  await tick();
-  assert.ok(doc.querySelector('.menu.control'));
+  await waitFor(window, () => doc.querySelector('.menu.control'), 'ouverture du menu');
 
   // Clic sur une partie non actionnable du menu (l'étiquette d'une ligne) :
   // le menu reste. C'est exactement le bug déjà vu : le clic remontait au
   // document, qui fermait tout menu dont la cible était « dehors ».
-  const label = doc.querySelector('.menu.control .control-label');
-  click(window, label);
+  click(window, doc.querySelector('.menu.control .control-label'));
   await tick();
   assert.ok(doc.querySelector('.menu.control'), 'un clic interne ne ferme pas le menu');
 
   // Clic ailleurs : le menu se ferme.
   click(window, doc.body);
-  await tick();
-  assert.strictEqual(doc.querySelector('.menu.control'), null);
+  await waitFor(window, () => !doc.querySelector('.menu.control'), 'fermeture du menu');
 });
 
 test('Échap referme le menu avant de masquer la fenêtre', async (t) => {
   const { window, calls } = await makeApp(t);
   const doc = window.document;
   click(window, doc.getElementById('btnControl'));
-  await tick();
-  assert.ok(doc.querySelector('.menu.control'));
+  await waitFor(window, () => doc.querySelector('.menu.control'), 'ouverture du menu');
 
   doc.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await tick();
-  assert.strictEqual(doc.querySelector('.menu.control'), null, 'le menu est fermé');
+  await waitFor(window, () => !doc.querySelector('.menu.control'), 'fermeture du menu');
   assert.ok(!calls.some(([name]) => name === 'hide'), 'la fenêtre, elle, reste ouverte');
 });
 
@@ -131,15 +146,13 @@ test('un item du menu se referme et exécute son action', async (t) => {
   const { window, calls } = await makeApp(t);
   const doc = window.document;
   click(window, doc.getElementById('btnControl'));
-  await tick();
+  await waitFor(window, () => doc.querySelector('.menu.control'), 'ouverture du menu');
 
   const item = [...doc.querySelectorAll('.menu.control .menu-item')]
     .find((el) => el.textContent.includes('Écran du téléphone'));
   click(window, item);
-  await tick();
-
-  assert.strictEqual(doc.querySelector('.menu.control'), null, 'l\u2019item referme le menu');
-  assert.ok(calls.some(([name]) => name === 'openMirror'), 'et lance l\u2019action correspondante');
+  await waitFor(window, () => !doc.querySelector('.menu.control'), 'fermeture par l\u2019item');
+  assert.ok(calls.some(([name]) => name === 'openMirror'), 'l\u2019item lance l\u2019action correspondante');
 });
 
 // ── Sélecteur d'appareils ───────────────────────────────────────────────
@@ -148,9 +161,12 @@ test('un seul appareil : le pilote relance la connexion, pas de menu', async (t)
   const { window, calls } = await makeApp(t, {
     devices: () => Promise.resolve([{ serial: 'A', model: 'Téléphone A', current: true }]),
   });
-  click(window, window.document.getElementById('device'));
+  const doc = window.document;
+  await waitFor(window, () => doc.getElementById('device').dataset.count === '1', 'liste des appareils');
+
+  click(window, doc.getElementById('device'));
   await tick();
-  assert.strictEqual(window.document.querySelector('.menu'), null, 'pas de sélecteur pour un appareil unique');
+  assert.strictEqual(doc.querySelector('.menu'), null, 'pas de sélecteur pour un appareil unique');
   assert.ok(calls.some(([name]) => name === 'refreshDevice'), 'reconnexion directe');
 });
 
@@ -168,21 +184,20 @@ test('deux appareils : le pilote ouvre le sélecteur et bascule', async (t) => {
     },
   });
   const doc = window.document;
+  await waitFor(window, () => doc.getElementById('device').dataset.count === '2', 'liste des appareils');
 
   click(window, doc.getElementById('device'));
-  await tick();
+  await waitFor(window, () => doc.querySelectorAll('.menu .menu-item').length === 2, 'ouverture du sélecteur');
 
   const items = [...doc.querySelectorAll('.menu .menu-item')];
-  assert.strictEqual(items.length, 2, 'les deux appareils sont listés');
-  assert.ok(items[0].className.includes('checked'), 'l\'appareil actif est marqué');
+  assert.ok(items[0].className.includes('checked'), 'l\u2019appareil actif est marqué');
 
   click(window, items[1]);
-  await tick();
-  assert.ok(calls.some(([name, arg]) => name === 'selectDevice' && arg === 'BBB'), 'la bascule demande le bon numéro de série');
-  assert.strictEqual(doc.getElementById('deviceName').textContent, 'Téléphone B', 'l\'interface montre le nouvel appareil');
+  await waitFor(window, () => calls.some(([name, arg]) => name === 'selectDevice' && arg === 'BBB'), 'bascule');
+  await waitFor(window, () => doc.getElementById('deviceName').textContent === 'Téléphone B', 'rendu du nouvel appareil');
 });
 
-// ── Utilitaires ─────────────────────────────────────────────────────────
+// ── Barre supérieure ────────────────────────────────────────────────────────
 
 test('le bouton notifications ouvre le volet, le referme au second clic', async (t) => {
   const { window } = await makeApp(t);
@@ -190,25 +205,22 @@ test('le bouton notifications ouvre le volet, le referme au second clic', async 
   const btn = doc.getElementById('btnNotifs');
 
   click(window, btn);
-  await tick();
-  assert.strictEqual(doc.getElementById('panelNotifs').hidden, false);
+  await waitFor(window, () => !doc.getElementById('panelNotifs').hidden, 'ouverture du volet');
 
   click(window, btn);
-  await tick();
-  assert.strictEqual(doc.getElementById('panelNotifs').hidden, true);
+  await waitFor(window, () => doc.getElementById('panelNotifs').hidden, 'fermeture du volet');
 });
 
 test('le bouton masquer prévient le processus principal', async (t) => {
   const { window, calls } = await makeApp(t);
   click(window, window.document.getElementById('btnClose'));
-  await tick();
-  assert.ok(calls.some(([name]) => name === 'hide'));
+  await waitFor(window, () => calls.some(([name]) => name === 'hide'), 'appel de hide');
 });
 
 test('le centre de contrôle contient épinglage, miroir et réglages', async (t) => {
   const { window } = await makeApp(t);
   click(window, window.document.getElementById('btnControl'));
-  await tick();
+  await waitFor(window, () => window.document.querySelector('.menu.control'), 'ouverture du menu');
 
   const labels = [...window.document.querySelectorAll('.menu.control .menu-item span')].map((s) => s.textContent);
   assert.ok(labels.includes('Écran du téléphone'));
@@ -222,20 +234,15 @@ test('renderNet allume, éteint et alerte selon l\u2019état des radios', async 
   const { window } = await makeApp(t);
   const doc = window.document;
 
-  // On pilote la fonction de rendu par la même voie que l'application : le
-  // canal d'événements « shown », qui déclenche un sondage complet.
   const net = { wifi: true, wifiConnected: true, bluetooth: false, airplane: false, mobileData: false, dnd: false };
-  const { aura } = { aura: window.aura };
-  aura.quickState = () => Promise.resolve({ net, volume: { value: 6, max: 15 }, ringer: 'normal', dnd: false });
+  window.aura.quickState = () => Promise.resolve({ net, volume: { value: 6, max: 15 }, ringer: 'normal', dnd: false });
 
   // pollQuick n'est pas exporté : on repasse par le chemin applicatif réel,
   // l'ouverture du centre de contrôle, qui rafraîchit l'état puis l'affiche.
   click(window, doc.getElementById('btnControl'));
-  await tick();
+  await waitFor(window, () => doc.getElementById('netWifi').classList.contains('live'), 'rendu des indicateurs');
 
-  const wifi = doc.getElementById('netWifi');
-  assert.strictEqual(wifi.classList.contains('off'), false, 'Wi-Fi actif : pas estompé');
-  assert.strictEqual(wifi.classList.contains('live'), true, 'Wi-Fi connecté : point vif');
+  assert.strictEqual(doc.getElementById('netWifi').classList.contains('off'), false, 'Wi-Fi actif : pas estompé');
   assert.strictEqual(doc.getElementById('netBt').classList.contains('off'), true, 'Bluetooth éteint : estompé');
   assert.strictEqual(doc.getElementById('netPlane').hidden, true, 'Pas de mode avion : icône masquée');
 });

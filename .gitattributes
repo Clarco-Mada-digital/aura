@@ -1,0 +1,3 @@
+# Fins de ligne : le projet tourne sur Linux et Windows, et les tests lisent
+# des sorties d'outils Unix (adb, scrcpy) dont les regex supposent des \n.
+* text=auto eol=lf

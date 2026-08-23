@@ -191,6 +191,9 @@ function renderDevice() {
   // Plusieurs téléphones branchés : le pilote devient un sélecteur.
   const multi = (state.devices || []).length > 1;
   pill.classList.toggle('multi', multi);
+  // Le nombre d'appareils connus, pour le style comme pour les tests : il
+  // n'est fiable qu'une fois la liste chargée.
+  pill.dataset.count = String((state.devices || []).length);
   pill.title = multi ? 'Choisir l’appareil actif' : '';
 
   if (state.device) {

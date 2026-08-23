@@ -10,7 +10,10 @@ const path = require('path');
 
 const device = require('../src/device.js');
 
-const fixture = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
+// Normalisation CRLF → LF : un checkout Windows avec autocrlf ne doit pas
+// faire échouer les regex ancrées sur les fins de ligne.
+const fixture = (name) =>
+  fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8').replace(/\r\n/g, '\n');
 
 // ── parseVersion ────────────────────────────────────────────────────────────
 
