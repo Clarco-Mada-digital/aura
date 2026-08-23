@@ -1,0 +1,36 @@
+Usage: scrcpy [options]
+
+Options:
+
+    --always-on-top
+        Make scrcpy window always on top (above other windows).
+
+    --video-bit-rate=value
+        Encode the video at the given bit rate.
+
+    --max-fps=value
+        Limit the frame rate of screen capture.
+
+    --new-display[=[<width>x<height>][/<dpi>]]
+        Create a new display with the specified resolution and density.
+
+    --no-audio
+        Disable audio forwarding.
+
+    --no-vd-system-decorations
+        Disable virtual display system decorations flag.
+
+    --serial=serial
+        The device serial number.
+
+    --start-app=name
+        Start an Android app, by its exact package name.
+
+    --video-codec=name
+        Select a video codec (h264, h265 or av1).
+
+    --window-height=value
+        Set the initial window height.
+
+    --window-title=text
+        Set a custom window title.

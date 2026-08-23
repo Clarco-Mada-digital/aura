@@ -1,0 +1,6 @@
+[server] INFO: Device: [samsung] samsung SM-A715F (Android 13)
+[server] INFO: List of apps:
+ * AR Zone                        com.samsung.android.arzone
+ * Accessibilité                  com.samsung.accessibility
+ - Aura Test                      com.aura.testapp
+ * WhatsApp   com.whatsapp

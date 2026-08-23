@@ -683,6 +683,37 @@ function registerIpc() {
     return { device: state.info, error: state.error, apps: appsCache.apps, collectedAt: appsCache.collectedAt };
   });
 
+  /// Les appareils prêts, pour le sélecteur de la barre. Deux téléphones
+  /// branchés ne doivent jamais en faire disparaître un.
+  ipcMain.handle('devices:list', async () => {
+    await device.startServer();
+    const devices = await device.listDevices();
+    return Promise.all(
+      devices
+        .filter((d) => d.state === 'device')
+        .map(async (d) => ({
+          serial: d.serial,
+          current: d.serial === current.serial,
+          model: (await device.deviceInfo(d.serial).catch(() => null))?.model || d.serial,
+        }))
+    );
+  });
+
+  /// Change d'appareil : le choix est mémorisé (connect() le reprendra), les
+  /// états de sondage sont remis à zéro pour ne pas mélanger deux téléphones.
+  ipcMain.handle('device:select', async (_e, serial) => {
+    await device.startServer();
+    const devices = await device.listDevices();
+    if (!devices.some((d) => d.serial === serial && d.state === 'device')) {
+      throw new Error('appareil introuvable ou non autorisé');
+    }
+    store.set({ serial });
+    knownKeys = new Set();
+    callNow = null;
+    const state = await connect();
+    return { device: state.info, error: state.error, apps: appsCache.apps, collectedAt: appsCache.collectedAt };
+  });
+
   // État radio du téléphone. Rien de bloquant : si la lecture échoue, l'interface
   // affiche simplement les icônes au repos.
   ipcMain.handle('device:connectivity', async () => {
@@ -707,6 +738,49 @@ function registerIpc() {
     if (!current.serial) throw new Error('aucun appareil connecté');
     return fn(current.serial, ...args);
   };
+
+  // ── Pont bureau → téléphone ───────────────────────────────────────────────
+  //
+  // Un envoi peut durer des minutes : la poignée rend la main tout de suite et
+  // la suite du récit passe par des évènements, sinon l'interface reste figée
+  // sur une promesse et l'utilisateur ne sait rien de ce qui se passe.
+  let prochainTransfert = 1;
+
+  const raconte = (message) => {
+    if (win && !win.isDestroyed()) win.webContents.send('transfer', message);
+  };
+
+  ipcMain.handle('bridge:send', async (_e, demandes) => {
+    if (!current.serial) throw new Error('aucun appareil connecté');
+    const liste = (Array.isArray(demandes) ? demandes : []).filter((d) => d && d.path);
+    if (!liste.length) throw new Error('rien à envoyer');
+
+    for (const demande of liste) {
+      const id = prochainTransfert++;
+      const nom = path.basename(demande.path);
+      const install = demande.action === 'install';
+      raconte({ id, nom, état: 'en cours', install, envoyé: 0, total: null });
+      try {
+        if (install) {
+          await device.installApk(current.serial, demande.path);
+          raconte({ id, nom, état: 'fini', install, message: 'Application installée' });
+          log.info(`installation de ${nom}`);
+        } else {
+          const r = await device.pushFile(current.serial, demande.path, {
+            onProgress: ({ sent, total }) => raconte({ id, nom, état: 'en cours', install, envoyé: sent, total }),
+          });
+          raconte({ id, nom, état: 'fini', install, message: 'Reçu dans Téléchargements', bytes: r.bytes });
+          log.info(`envoi de ${nom} (${r.bytes} octets)`);
+        }
+      } catch (err) {
+        raconte({ id, nom, état: 'échec', install, message: err.message });
+        log.warn(`échec de l'envoi de ${nom} : ${err.message}`);
+      }
+    }
+    return { count: liste.length };
+  });
+
+  ipcMain.handle('bridge:url', avecAppareil((serial, url) => device.openUrl(serial, url)));
 
   /// Tout le panneau Wi-Fi en un aller-retour : état, réseaux en portée,
   /// réseaux enregistrés. Le scan dure quelques secondes, d'où le délai large

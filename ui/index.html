@@ -86,6 +86,9 @@
         <div class="empty" id="empty" hidden></div>
       </section>
 
+      <!-- Envois en cours vers le téléphone -->
+      <div class="transfers" id="transfers" hidden></div>
+
       <footer class="foot">
         <div class="running" id="running"></div>
         <div class="foot-keys" id="footKeys">
@@ -133,6 +136,25 @@
         </div>
         <div class="panel-body" id="settingsBody"></div>
       </aside>
+
+      <!-- Voile de dépôt : n'apparaît qu'au survol d'un fichier venu du bureau -->
+      <div class="dropzone" id="dropzone" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+        <div class="dropzone-text" id="dropzoneText">Déposer pour envoyer au téléphone</div>
+      </div>
+
+      <!-- Un .apk n'est pas un fichier comme un autre : on demande -->
+      <div class="ask" id="askApk" hidden>
+        <div class="ask-box">
+          <div class="ask-title" id="askTitle">Application Android</div>
+          <div class="ask-text" id="askText"></div>
+          <div class="ask-actions">
+            <button class="ghost" id="askCopy">Copier seulement</button>
+            <button class="ghost primary" id="askInstall">Installer</button>
+            <button class="ghost" id="askCancel">Annuler</button>
+          </div>
+        </div>
+      </div>
 
       <div class="toast" id="toast" hidden></div>
     </main>

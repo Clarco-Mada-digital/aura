@@ -19,7 +19,10 @@ un grand écran.
 | **Fenêtres** | Une application = un processus scrcpy = un écran virtuel Android |
 | **Notifications** | Balayez pour écarter, cliquez pour ouvrir l'application qui l'a posée |
 | **Connectivité** | Wi-Fi, Bluetooth, mode avion et Ne pas déranger visibles d'un coup d'œil dans la barre |
+| **Multi-appareils** | Deux téléphones branchés : le pilote devient sélecteur ; inventaire et icônes sont mémorisés par numéro de série |
 | **Centre de contrôle** | Le bouton ⋯ regroupe écran du téléphone, épingle, réglages, volume média, sonnerie/vibreur/silencieux, et bascules Wi-Fi / Bluetooth / données |
+| **Envoyer au téléphone** | Déposez un fichier sur le widget : il part dans les Téléchargements. Un `.apk` propose l'installation. Une adresse tapée dans la recherche s'ouvre sur le téléphone |
+| **Réseaux Wi-Fi** | ⋯ → « Réseaux Wi-Fi » : ce qui est capté, ce qui est enregistré, rejoindre un réseau — y compris masqué — ou l'oublier |
 | **Raccourci global** | `Ctrl+Alt+Espace` fait apparaître ou disparaître le widget |
 | **Icône de barre** | Le widget vit dans la zone de notification, jamais dans la barre des tâches |
 
@@ -442,7 +445,13 @@ src/windows.js   lever et réduire les fenêtres d'application (X11)
 src/log.js       journal de bord, pour les échecs qu'on ne voit pas passer
 src/update.js    vérification et installation des nouvelles versions
 ui/              interface : index.html, style.css, app.js
+test/            filet de tests : parseurs sur sorties réelles, interface jsdom
 ```
+
+`npm test` enchaîne la vérification de syntaxe, les tests des parseurs
+(`test/fixtures/` contient des sorties adb et scrcpy figées) et les tests
+d'interface (jsdom pilote la vraie page, événements compris). Chaque bug
+corrigé mérite son test : c'est ce qui l'empêche de revenir.
 
 Les réglages vivent dans `~/.config/aura/config.json`, les icônes dans
 `~/.config/aura/icons/`.

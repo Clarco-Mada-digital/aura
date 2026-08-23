@@ -8,6 +8,7 @@ const state = {
   settings: {},
   apps: [],
   device: null,
+  devices: [],
   engine: null,
   error: null,
   sessions: [],
@@ -51,6 +52,7 @@ function score(app, needle) {
 const MAX_HITS = 8;
 
 const DIAL = '__composer__';
+const LIEN = '__lien__';
 
 /// Dernier état connu du vérificateur de mise à jour.
 let updateState = null;
@@ -97,9 +99,14 @@ function compute() {
   // numéro déjà en place. C'est le geste qu'on attend d'un lanceur relié à un
   // téléphone, et il ne coûte qu'une ligne de plus dans la liste.
   const numero = asNumber(state.query);
-  state.results = numero
-    ? [{ package: DIAL, name: `Appeler ${numero}`, dial: numero, system: false }, ...hits]
-    : hits;
+  // Une adresse collée dans la barre continue sur le téléphone : c'est le
+  // même geste que le numéro, et le lien s'ouvre dans l'application qui en a
+  // la charge — navigateur, boutique, cartes.
+  const lien = adresseDe(state.query);
+  const tête = [];
+  if (numero) tête.push({ package: DIAL, name: `Appeler ${numero}`, dial: numero, system: false });
+  if (lien) tête.push({ package: LIEN, name: `Ouvrir ${lien} sur le téléphone`, url: lien, system: false });
+  state.results = tête.length ? [...tête, ...hits] : hits;
   state.selected = 0;
 }
 
@@ -179,12 +186,19 @@ function renderDevice() {
   const dot = $('dot');
   const name = $('deviceName');
   const meta = $('deviceMeta');
+  const pill = $('device');
+
+  // Plusieurs téléphones branchés : le pilote devient un sélecteur.
+  const multi = (state.devices || []).length > 1;
+  pill.classList.toggle('multi', multi);
+  pill.title = multi ? 'Choisir l’appareil actif' : '';
 
   if (state.device) {
     dot.className = 'dot on';
     name.textContent = state.device.model;
     const bits = [];
     if (state.device.battery !== null) bits.push(`${state.device.battery}%${state.device.charging ? ' ⚡' : ''}`);
+    if (multi) bits.push(`${state.devices.length} appareils`);
     meta.textContent = bits.length ? `· ${bits.join(' · ')}` : '';
   } else {
     dot.className = 'dot off';
@@ -285,11 +299,14 @@ function renderHits() {
     const row = document.createElement('div');
     row.className = `hit${index === state.selected ? ' sel' : ''}`;
 
-    if (app.dial) {
+    // Les deux entrées qui ne sont pas des applications : appeler un numéro,
+    // pousser une adresse. Même dessin, même comportement au clavier.
+    if (app.dial || app.url) {
       const glyphe = document.createElement('div');
-      glyphe.className = 'app-icon sm dial';
-      glyphe.innerHTML =
-        '<svg viewBox="0 0 24 24"><path d="M6.6 3.5l2.6.5 1 3.4-2 1.4a12 12 0 0 0 5 5l1.4-2 3.4 1 .5 2.6a2 2 0 0 1-2 2.3A15.5 15.5 0 0 1 4.3 5.5a2 2 0 0 1 2.3-2Z"/></svg>';
+      glyphe.className = `app-icon sm ${app.dial ? 'dial' : 'link'}`;
+      glyphe.innerHTML = app.dial
+        ? '<svg viewBox="0 0 24 24"><path d="M6.6 3.5l2.6.5 1 3.4-2 1.4a12 12 0 0 0 5 5l1.4-2 3.4 1 .5 2.6a2 2 0 0 1-2 2.3A15.5 15.5 0 0 1 4.3 5.5a2 2 0 0 1 2.3-2Z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 1 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 1 0 11 18.7l1.4-1.4"/></svg>';
       const texts = document.createElement('div');
       texts.className = 'texts';
       const name = document.createElement('div');
@@ -297,10 +314,12 @@ function renderHits() {
       name.textContent = app.name;
       const sub = document.createElement('div');
       sub.className = 'pkg';
-      sub.textContent = 'Ouvre le composeur, le numéro déjà saisi';
+      sub.textContent = app.dial
+        ? 'Ouvre le composeur, le numéro déjà saisi'
+        : "S'ouvre dans l'application du téléphone qui en a la charge";
       texts.append(name, sub);
       row.append(glyphe, texts);
-      row.addEventListener('click', () => launch(app.package, null, app.dial));
+      row.addEventListener('click', () => launch(app.package, null, app.dial, app.url));
       row.addEventListener('mouseenter', () => select(index, false));
       hits.appendChild(row);
       return;
@@ -964,11 +983,71 @@ function renderNet(net) {
 let quickBusy = false;
 
 async function pollQuick() {
-  if (!state.device || document.hidden || quickBusy) return;
+  if (!state.device || document.hidden) return;
   const fresh = await window.aura.quickState().catch(() => null);
   if (!fresh) return;
   quick = fresh;
   renderNet(fresh.net);
+}
+
+// ── Sélecteur d'appareils ─────────────────────────────────────────────────
+
+/// Liste les appareils prêts. Appelée au démarrage et à chaque reconnexion :
+/// brancher un second téléphone fait apparaître le sélecteur sans redémarrage.
+async function refreshDevices() {
+  state.devices = (await window.aura.devices().catch(() => [])) || [];
+  renderDevice();
+}
+
+async function openDeviceMenu() {
+  closeMenu();
+  await refreshDevices();
+  if (state.devices.length < 2) return reconnect();
+
+  const menu = document.createElement('div');
+  menu.className = 'menu';
+
+  const head = document.createElement('div');
+  head.className = 'menu-head';
+  head.textContent = 'Appareils';
+  menu.appendChild(head);
+
+  for (const d of state.devices) {
+    const entry = document.createElement('button');
+    entry.className = `menu-item${d.current ? ' checked' : ''}`;
+    const label = document.createElement('span');
+    label.textContent = d.model;
+    entry.appendChild(label);
+    const hint = document.createElement('small');
+    hint.textContent = d.current ? 'actif' : d.serial;
+    entry.appendChild(hint);
+    entry.onclick = async () => {
+      closeMenu();
+      if (d.current) return;
+      toast(`Bascule vers ${d.model}…`);
+      const fresh = await window.aura.selectDevice(d.serial).catch((err) => {
+        toast(String(err.message || err), true);
+        return null;
+      });
+      if (!fresh) return;
+      state.device = fresh.device;
+      state.apps = fresh.apps || [];
+      state.error = fresh.error;
+      state.collectedAt = fresh.collectedAt;
+      compute();
+      renderAll();
+      refreshDevices();
+      pollQuick();
+      toast(`Appareil actif : ${fresh.device ? fresh.device.model : d.serial}`);
+    };
+    menu.appendChild(entry);
+  }
+
+  document.body.appendChild(menu);
+  const box = menu.getBoundingClientRect();
+  const r = $('device').getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - box.width - 8))}px`;
+  menu.style.top = `${Math.max(8, r.bottom + 6)}px`;
 }
 
 /// Une radio met un instant à basculer pour de bon : relire son état trop tôt
@@ -1350,7 +1429,17 @@ async function applyHotkey(accelerator) {
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
-async function launch(pkg, once = null, numero = null) {
+async function launch(pkg, once = null, numero = null, url = null) {
+  if (pkg === LIEN || url) {
+    try {
+      await window.aura.sendUrl(url);
+      toast('Lien ouvert sur le téléphone');
+    } catch (err) {
+      toast(messageErreur(err), true);
+    }
+    return;
+  }
+
   if (pkg === DIAL || numero) {
     toast('Ouverture du composeur…');
     try {
@@ -1449,6 +1538,7 @@ async function reconnect() {
   compute();
   renderAll();
   pollQuick();
+  refreshDevices();
 }
 
 // Signature du dernier ensemble de notifications connu.
@@ -1530,12 +1620,24 @@ function fit() {
     const content = inner === empty ? 160 : inner.scrollHeight;
 
     const style = getComputedStyle(shell);
-    const frame =
-      parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) +
-      parseFloat(style.rowGap || style.gap || 0) * 3 +
-      document.querySelector('.bar').offsetHeight +
-      document.querySelector('.search').offsetHeight +
-      document.querySelector('.foot').offsetHeight;
+    const gap = parseFloat(style.rowGap || style.gap || 0);
+
+    // Tout ce qui entoure la scène est mesuré, plutôt qu'énuméré : la liste
+    // figée d'autrefois (barre, recherche, pied) ignorait le bandeau d'appel
+    // et la bande d'envois, et la fenêtre restait trop courte — la scène était
+    // alors écrasée à quelques pixels sous le reste du contenu.
+    let frame = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    let rangs = 0;
+    for (const enfant of shell.children) {
+      // Volets, voiles et messages flottent au-dessus : ils ne prennent pas de
+      // place dans la colonne.
+      const pose = getComputedStyle(enfant).position;
+      if (pose === 'absolute' || pose === 'fixed') continue;
+      if (enfant.hidden || getComputedStyle(enfant).display === 'none') continue;
+      rangs++;
+      if (!enfant.contains(inner)) frame += enfant.offsetHeight;
+    }
+    frame += gap * Math.max(0, rangs - 1);
 
     // 20 px pour les marges du corps ; en liste, 10 de plus pour qu'une barre
     // de défilement n'apparaisse pas sur un demi-pixel d'écart.
@@ -1566,6 +1668,182 @@ function openPanel(which) {
 
 const panelOpen = () =>
   ['panelNotifs', 'panelSettings', 'panelWifi'].some((id) => !$(id).hidden);
+
+// ── Pont bureau → téléphone ─────────────────────────────────────────────────
+//
+// Déposer un fichier sur le widget l'envoie dans les Téléchargements du
+// téléphone ; un .apk demande d'abord ce qu'on veut en faire. Le glisser-
+// déposer interne — réordonner les favoris — ne porte que du texte : c'est la
+// présence du type « Files » qui distingue les deux, jamais la cible du survol.
+
+const transferts = new Map(); // id → { nom, état, envoyé, total, install, message }
+
+function estFichierExterne(e) {
+  return [...(e.dataTransfer?.types || [])].includes('Files');
+}
+
+const octets = (n) => {
+  if (!Number.isFinite(n)) return '';
+  if (n < 1024) return `${n} o`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} ko`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} Mo`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} Go`;
+};
+
+function renderTransfers() {
+  const zone = $('transfers');
+  zone.textContent = '';
+  const liste = [...transferts.values()];
+  zone.hidden = !liste.length;
+  if (!liste.length) return fit();
+
+  for (const t of liste) {
+    const ligne = document.createElement('div');
+    ligne.className = `transfer ${t.état === 'échec' ? 'failed' : t.état === 'fini' ? 'done' : ''}`;
+
+    const textes = document.createElement('div');
+    textes.className = 'transfer-texts';
+    const nom = document.createElement('div');
+    nom.className = 'transfer-name';
+    nom.textContent = t.nom;
+    const état = document.createElement('div');
+    état.className = 'transfer-state';
+    état.textContent =
+      t.état === 'échec' ? t.message
+      : t.état === 'fini' ? t.message
+      : t.install ? 'Installation…'
+      : t.total ? `${octets(t.envoyé)} / ${octets(t.total)}`
+      : 'Envoi…';
+    textes.append(nom, état);
+    ligne.appendChild(textes);
+
+    // Une barre pleine à 100 % dirait « fini » avant que ce le soit : tant que
+    // la taille totale est inconnue, on montre un va-et-vient.
+    const jauge = document.createElement('div');
+    jauge.className = `gauge${t.total ? '' : ' indeterminate'}`;
+    const part = document.createElement('i');
+    if (t.total) part.style.width = `${Math.round((100 * t.envoyé) / t.total)}%`;
+    jauge.appendChild(part);
+    if (t.état === 'en cours') ligne.appendChild(jauge);
+
+    zone.appendChild(ligne);
+  }
+  fit();
+}
+
+function onTransfer(info) {
+  const connu = transferts.get(info.id) || {};
+  transferts.set(info.id, { ...connu, ...info });
+  renderTransfers();
+  if (info.état === 'fini' || info.état === 'échec') {
+    if (info.état === 'échec') toast(`${info.nom} : ${info.message}`, true);
+    // La ligne reste un instant pour être lue, puis s'efface d'elle-même.
+    setTimeout(() => { transferts.delete(info.id); renderTransfers(); }, info.état === 'échec' ? 8000 : 3500);
+  }
+}
+
+/// Envoie une liste de chemins, après avoir tranché le sort des .apk.
+async function envoyer(chemins) {
+  if (!state.device) return toast('Aucun téléphone connecté', true);
+  const apks = chemins.filter((c) => /\.apk$/i.test(c));
+  const autres = chemins.filter((c) => !/\.apk$/i.test(c));
+
+  if (autres.length) {
+    window.aura.sendFiles(autres.map((path) => ({ path, action: 'push' }))).catch((err) => toast(messageErreur(err), true));
+  }
+  if (!apks.length) return;
+
+  const choix = await demanderApk(apks);
+  if (!choix) return;
+  window.aura
+    .sendFiles(apks.map((path) => ({ path, action: choix })))
+    .catch((err) => toast(messageErreur(err), true));
+}
+
+/// Installer ou simplement copier ? Installer une application est un acte qui
+/// se demande — le fichier vient d'être glissé, l'intention n'est pas dite.
+function demanderApk(apks) {
+  return new Promise((resolve) => {
+    const voile = $('askApk');
+    $('askTitle').textContent = apks.length > 1 ? `${apks.length} applications Android` : 'Application Android';
+    $('askText').textContent = apks.map((c) => c.split('/').pop()).join(', ');
+    voile.hidden = false;
+
+    const fermer = (valeur) => {
+      voile.hidden = true;
+      document.removeEventListener('keydown', surTouche, true);
+      resolve(valeur);
+    };
+    const surTouche = (e) => { if (e.key === 'Escape') { e.stopPropagation(); fermer(null); } };
+    document.addEventListener('keydown', surTouche, true);
+    $('askInstall').onclick = () => fermer('install');
+    $('askCopy').onclick = () => fermer('push');
+    $('askCancel').onclick = () => fermer(null);
+    $('askInstall').focus();
+  });
+}
+
+// Un compteur, et non un booléen : `dragleave` part aussi quand le pointeur
+// passe d'un élément à son voisin, et le voile clignoterait à chaque frontière.
+let survols = 0;
+// `dragover` bat en continu tant qu'un fichier survole la fenêtre. Son silence
+// est donc le signe le plus sûr que le survol est fini — plus sûr que
+// `dragleave`, qui se perd quand le pointeur quitte la fenêtre trop vite ou
+// que le dépôt se termine chez le voisin. Sans ce garde-fou, le voile reste
+// affiché indéfiniment, et comme il ne prend pas les clics, rien ne le chasse.
+let veilleVoile = null;
+
+function montrerVoile(afficher) {
+  const voile = $('dropzone');
+  if (afficher) {
+    $('dropzoneText').textContent = state.device
+      ? 'Déposer pour envoyer au téléphone'
+      : 'Aucun téléphone connecté';
+    voile.classList.toggle('refuse', !state.device);
+  } else {
+    survols = 0;
+  }
+  voile.hidden = !afficher;
+  clearTimeout(veilleVoile);
+  veilleVoile = afficher ? setTimeout(() => montrerVoile(false), 600) : null;
+}
+
+document.addEventListener('dragenter', (e) => {
+  if (!estFichierExterne(e)) return;
+  e.preventDefault();
+  survols++;
+  montrerVoile(true);
+});
+document.addEventListener('dragover', (e) => {
+  if (!estFichierExterne(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = state.device ? 'copy' : 'none';
+  montrerVoile(true); // réarme la veille
+});
+document.addEventListener('dragleave', (e) => {
+  if (!estFichierExterne(e)) return;
+  survols = Math.max(0, survols - 1);
+  if (!survols) montrerVoile(false);
+});
+document.addEventListener('dragend', () => montrerVoile(false));
+document.addEventListener('drop', (e) => {
+  if (!estFichierExterne(e)) return;
+  e.preventDefault();
+  montrerVoile(false);
+  const chemins = [...e.dataTransfer.files].map((f) => window.aura.pathForFile(f)).filter(Boolean);
+  if (!chemins.length) return toast('Ce dépôt ne contient aucun fichier lisible', true);
+  envoyer(chemins);
+});
+
+/// Ce qui ressemble à une adresse : de quoi proposer l'envoi au téléphone sans
+/// exiger le « https:// » que personne ne tape.
+const ADRESSE = /^(?:(?:https?|tel|mailto|sms|geo|market):\S+|(?:www\.)?[\w-]+(?:\.[\w-]+)+(?:[/?#]\S*)?)$/i;
+
+function adresseDe(texte) {
+  const propre = String(texte || '').trim();
+  if (!ADRESSE.test(propre)) return null;
+  return /^[a-z]+:/i.test(propre) ? propre : `https://${propre}`;
+}
 
 // ── Réseaux Wi-Fi ───────────────────────────────────────────────────────────
 //
@@ -1936,6 +2214,7 @@ async function boot() {
   renderAll();
   pollNotifications();
   pollQuick();
+  refreshDevices();
   window.aura.callState().then((call) => { state.call = call; renderCall(); }).catch(() => {});
 
   // L'inventaire n'existe pas encore au tout premier lancement : on le
@@ -2004,7 +2283,9 @@ $('net').onclick = async (e) => {
 };
 $('btnShade').onclick = () => { window.aura.openShade(); toast('Volet ouvert sur le téléphone'); };
 $('btnClearAll').onclick = () => dismissAll();
-$('device').onclick = () => reconnect();
+// Un seul appareil : le pilote relance la connexion. Plusieurs : il ouvre le
+// sélecteur — le second téléphone ne doit pas être un invisible.
+$('device').onclick = () => ((state.devices || []).length > 1 ? openDeviceMenu() : reconnect());
 
 // L'épinglage vit désormais dans le centre de contrôle (menu ⋯).
 
@@ -2041,7 +2322,9 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Enter') {
     const app = state.results[state.selected];
-    if (app) launch(app.package);
+    // Le numéro et l'adresse voyagent avec l'entrée : sans eux, « Appeler »
+    // ouvrait le composeur vide, et « Ouvrir » n'aurait rien eu à ouvrir.
+    if (app) launch(app.package, null, app.dial, app.url);
     return;
   }
   if (e.key === 'd' && e.ctrlKey) {
@@ -2118,6 +2401,7 @@ window.aura.onNotifications((list) => {
   renderNotifications();
 });
 window.aura.onWallpaper((frame) => paintWallpaper(frame));
+window.aura.onTransfer((info) => onTransfer(info));
 window.aura.onShown(() => {
   $('query').select();
   $('query').focus();

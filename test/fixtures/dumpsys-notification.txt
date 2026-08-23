@@ -1,0 +1,24 @@
+Current Notification Manager state:
+  mArchive=Archive (0 notifications)
+
+    NotificationRecord(
+      key=0|com.whatsapp|42|null|10428
+      pkg=com.whatsapp user=0 id=42
+      android.title=String (Alice)
+      android.text=String (Salut, tu es là ?)
+      [android.title.big=String (Alice)]
+      when=1718000000000
+    )
+    NotificationRecord(
+      key=0|com.google.android.gm|7|null|10238
+      pkg=com.google.android.gm user=0 id=7
+      android.title=String (Trois nouveaux messages
+sur deux lignes)
+      android.text=String (Bonjour)
+      when=1718000001000
+    )
+    NotificationRecord(
+      key=0|com.samsung.android.app.routines|108|null|10041
+      pkg=com.samsung.android.app.routines user=0 id=108
+      when=1718000002000
+    )

@@ -2,13 +2,29 @@
 // Pont entre l'interface et le processus principal. La liste est explicite :
 // rien d'autre que ces canaux n'est joignable depuis la page.
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
+
+/// Le chemin d'un fichier déposé sur la fenêtre.
+///
+/// `File.path` n'existe plus depuis Electron 32 : la page n'a plus le droit de
+/// connaître l'arborescence de la machine. Seul le préchargement peut faire la
+/// traduction, et c'est très bien ainsi — l'interface ne manipule qu'un objet
+/// que l'utilisateur a lui-même déposé.
+const cheminDuFichier = (file) => {
+  try {
+    return webUtils.getPathForFile(file) || null;
+  } catch (_) {
+    return null;
+  }
+};
 
 contextBridge.exposeInMainWorld('aura', {
   bootstrap: () => invoke('bootstrap'),
   refreshDevice: () => invoke('device:refresh'),
+  devices: () => invoke('devices:list'),
+  selectDevice: (serial) => invoke('device:select', serial),
   quickState: () => invoke('device:quickstate'),
   setVolume: (delta) => invoke('quick:volume', delta),
   setRinger: (mode) => invoke('quick:ringer', mode),
@@ -20,6 +36,9 @@ contextBridge.exposeInMainWorld('aura', {
   wifiUnsuggest: (ssid) => invoke('wifi:unsuggest', ssid),
   wifiSuggestions: () => invoke('wifi:suggestions'),
   wifiSettings: () => invoke('wifi:settings'),
+  pathForFile: cheminDuFichier,
+  sendFiles: (demandes) => invoke('bridge:send', demandes),
+  sendUrl: (url) => invoke('bridge:url', url),
   refreshApps: () => invoke('apps:refresh'),
   icon: (pkg) => invoke('icon:get', pkg),
   clearIcons: () => invoke('icons:clear'),
@@ -66,4 +85,5 @@ contextBridge.exposeInMainWorld('aura', {
   onShown: (fn) => ipcRenderer.on('launcher:shown', () => fn()),
   onEngineProgress: (fn) => ipcRenderer.on('engine:progress', (_e, p) => fn(p)),
   onWallpaper: (fn) => ipcRenderer.on('wallpaper:frame', (_e, frame) => fn(frame)),
+  onTransfer: (fn) => ipcRenderer.on('transfer', (_e, info) => fn(info)),
 });

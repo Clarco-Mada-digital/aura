@@ -1,0 +1,4 @@
+BSSID              Frequency  RSSI        Channel  SSID        Flags
+aa:bb:cc:dd:ee:01  2437       -52(-52)    6        MonReseau   [WPA2-PSK-CCMP][ESS]
+aa:bb:cc:dd:ee:02  5180       -71(-71)    36       MonReseau   [WPA2-PSK-CCMP][ESS]
+ff:ee:dd:cc:bb:aa  2412       -80(-80)    1        \x00        [ESS]

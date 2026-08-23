@@ -1,6 +1,6 @@
 {
   "name": "aura",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Un widget de bureau pour ouvrir vos applications Android, propulsé par scrcpy.",
   "main": "src/main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "dist:win": "electron-builder --win nsis portable",
     "dist:mac": "electron-builder --mac dmg zip",
     "release": "bash scripts/release.sh",
-    "test": "node --check src/main.js && node --check src/device.js && node --check src/preload.js && node --check src/store.js && node --check src/icons.js && node --check src/arsc.js && node --check src/install.js && node --check src/windows.js && node --check src/log.js && node --check ui/app.js"
+    "test": "node --check src/main.js && node --check src/device.js && node --check src/preload.js && node --check src/store.js && node --check src/icons.js && node --check src/arsc.js && node --check src/install.js && node --check src/windows.js && node --check src/log.js && node --check ui/app.js && node --test"
   },
   "author": {
     "name": "Mada Digital",
@@ -21,7 +21,8 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "jsdom": "^29.1.1"
   },
   "build": {
     "appId": "net.madadigital.aura",

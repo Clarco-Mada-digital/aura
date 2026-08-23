@@ -42,7 +42,14 @@ function run(bin, args, opts = {}) {
     execFile(
       bin,
       args,
-      { maxBuffer: 64 * 1024 * 1024, timeout: opts.timeout || 30000, encoding: opts.encoding || 'utf8', env: childEnv() },
+      {
+        maxBuffer: 64 * 1024 * 1024,
+        // `timeout: 0` désarme la minuterie — un envoi de fichier dure ce qu'il
+        // dure. Le `||` d'usage l'aurait confondu avec « non précisé ».
+        timeout: opts.timeout === 0 ? 0 : opts.timeout || 30000,
+        encoding: opts.encoding || 'utf8',
+        env: childEnv(),
+      },
       (err, stdout, stderr) => resolve({ ok: !err, code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || '' })
     );
   });
@@ -152,18 +159,114 @@ async function adb(serial, args, opts) {
   return run(findAdb(), adbArgs(serial, args), opts);
 }
 
-async function shell(serial, command, opts) {
-  const out = await adb(serial, ['shell', command], opts);
-  return out.ok ? out.stdout : '';
+// ── Shell adb persistant ────────────────────────────────────────────────────
+//
+// Chaque `adb shell` isolé coûte ~300 ms : fork du processus, poignée de main
+// avec le serveur adb, ouverture du shell. Le centre de contrôle en enchaîne
+// quatre à l'ouverture, le sondage tourne toutes les 20 s, les appels toutes
+// les 3 s — le câble passe son temps à établir des connexions jetables.
+//
+// Un unique `adb shell` maintenu ouvert, alimenté par son entrée standard,
+// répond en ~20 ms. Chaque commande est terminée par un marqueur portant son
+// numéro d'ordre et le code de sortie ; la lecture s'arrête au marqueur.
+
+let shSession = null;
+let shSeq = 0;
+
+function closeShell() {
+  if (!shSession) return;
+  const session = shSession;
+  shSession = null;
+  for (const entry of session.pending.values()) {
+    clearTimeout(entry.timer);
+    entry.reject(new Error('shell adb fermé'));
+  }
+  session.pending.clear();
+  try { session.proc.kill(); } catch (_) {}
 }
 
-/// La même chose, mais sans jeter le verdict : `{ ok, stdout, stderr }`.
+function shellSession(serial) {
+  if (shSession && shSession.serial === serial) return shSession;
+  closeShell();
+
+  const proc = spawn(findAdb(), adbArgs(serial, ['shell']), { stdio: ['pipe', 'pipe', 'pipe'] });
+  const session = { serial, proc, pending: new Map(), buf: '' };
+  shSession = session;
+
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (chunk) => {
+    session.buf += chunk;
+    // `adb shell` interactif passe par un pty : les lignes se terminent par
+    // \r\n, et stderr se fond dans stdout — nos analyses tolèrent les deux.
+    for (;;) {
+      const m = /__AURA_(\d+)_(\d+)__\r?\n/.exec(session.buf);
+      if (!m) break;
+      const id = Number(m[1]);
+      const entry = session.pending.get(id);
+      const output = session.buf.slice(0, m.index);
+      session.buf = session.buf.slice(m.index + m[0].length);
+      if (!entry) continue;
+      entry.output += output;
+      session.pending.delete(id);
+      clearTimeout(entry.timer);
+      entry.resolve({ ok: m[2] === '0', code: Number(m[2]), stdout: entry.output, stderr: '' });
+    }
+  });
+
+  // Perte du câble, arrêt du serveur adb, appareil débranché : on jette la
+  // session ; la prochaine commande en rouvrira une propre.
+  const abandon = () => {
+    if (shSession !== session) return;
+    shSession = null;
+    for (const entry of session.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('connexion adb perdue'));
+    }
+    session.pending.clear();
+  };
+  proc.on('exit', abandon);
+  proc.on('error', abandon);
+
+  return session;
+}
+
+function pshell(serial, command, opts = {}) {
+  const session = shellSession(serial);
+  return new Promise((resolve, reject) => {
+    const id = ++shSeq;
+    const entry = {
+      output: '',
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        session.pending.delete(id);
+        reject(new Error(`délai dépassé : ${command.slice(0, 40)}`));
+      }, opts.timeout || 8000),
+    };
+    session.pending.set(id, entry);
+    // `$?` (code de sortie de la commande) ferme le marqueur. Chaîne simple :
+    // pas d'interpolation, donc le dollar reste un dollar.
+    session.proc.stdin.write(command + '; echo __AURA_' + id + '_$?__\n');
+  });
+}
+
+async function shell(serial, command, opts) {
+  try {
+    const out = await pshell(serial, command, opts);
+    return out.ok ? out.stdout : '';
+  } catch (_) {
+    // Même contrat que l'ancienne forme : une commande qui échoue répond du vide.
+    return '';
+  }
+}
+
+/// La même chose, mais sans jeter le verdict : `{ ok, code, stdout, stderr }`.
 ///
 /// Les contrôles rapides ont besoin de distinguer « la commande a répondu du
 /// vide » de « la commande a échoué » — ce que la forme texte de `shell` ne
 /// permet pas.
 function shellOut(serial, command, opts) {
-  return adb(serial, ['shell', command], opts);
+  return pshell(serial, command, opts);
 }
 
 async function startServer() {
@@ -215,8 +318,8 @@ async function connectivity(serial) {
     // wlan0 avec une adresse IP = réellement associé à un réseau.
     'ip addr show wlan0 2>/dev/null | grep -q "inet " && echo assoc=1 || echo assoc=0',
   ].join('; ');
-  const out = await shellOut(serial, script, { timeout: 8000 });
-  if (!out.ok) return null;
+  const out = await shellOut(serial, script, { timeout: 8000 }).catch(() => null);
+  if (!out || !out.ok) return null;
   const get = (name) => {
     const m = new RegExp(`^${name}=(.*)$`, 'm').exec(out.stdout);
     return m ? m[1].trim() : null;
@@ -332,6 +435,140 @@ async function setRadio(serial, radio, on) {
     throw new Error(`la radio ${radio} a été refusée par l'appareil`);
   }
   return on;
+}
+
+// ── Pont bureau → téléphone ─────────────────────────────────────────────────
+//
+// Le presse-papiers manque volontairement à l'appel : `cmd clipboard` n'est pas
+// implémenté sur ces appareils, et depuis Android 10 seul le programme au
+// premier plan peut lire le presse-papiers. Rien de fiable à en tirer par ADB ;
+// scrcpy le synchronise déjà pour ses propres fenêtres.
+
+/// Là où atterrit ce qu'on envoie : le dossier que l'utilisateur connaît.
+const DOSSIER_TELEPHONE = '/sdcard/Download';
+
+/// Rend un fichier visible dans « Mes fichiers » et la galerie.
+///
+/// Sans cela, le fichier est bien sur la carte mais l'index média l'ignore :
+/// il n'apparaît nulle part, et l'utilisateur croit l'envoi perdu. L'ancien
+/// broadcast MEDIA_SCANNER_SCAN_FILE ne fait plus rien pour une application
+/// ordinaire ; `content call … scan_file` est la voie qui reste.
+async function scanMedia(serial, remote) {
+  await shellOut(
+    serial,
+    `content call --uri content://media/external --method scan_file --arg ${quote(remote)}`,
+    { timeout: 15000 }
+  );
+}
+
+/// Un nom de fichier acceptable pour la carte du téléphone.
+///
+/// Le nom vient d'un fichier déposé à la souris : il peut contenir n'importe
+/// quoi, y compris des barres obliques une fois traversé un lien symbolique.
+/// On ne garde que le nom de base, et les caractères que VFAT refuse sont
+/// remplacés plutôt que de faire échouer l'envoi sans explication.
+function remoteName(local) {
+  const base = path.basename(String(local)).replace(/[\\/:*?"<>|]/g, '_').replace(/^\.+/, '');
+  return base || `fichier-${Date.now()}`;
+}
+
+/// Envoie un fichier dans le dossier Téléchargements du téléphone.
+///
+/// `adb push` n'affiche sa progression que sur un terminal : branché sur un
+/// tube, il ne dit rien avant la ligne finale. La progression est donc mesurée
+/// à la source — la taille du fichier tel qu'il grossit sur le téléphone.
+async function pushFile(serial, local, { onProgress } = {}) {
+  const taille = fs.statSync(local).size;
+  const distant = `${DOSSIER_TELEPHONE}/${remoteName(local)}`;
+
+  let sonde = null;
+  if (onProgress && taille > 512 * 1024) {
+    sonde = setInterval(async () => {
+      const out = await shellOut(serial, `stat -c %s ${quote(distant)} 2>/dev/null`, { timeout: 5000 });
+      const envoyé = Number(String(out.stdout || '').trim());
+      if (Number.isFinite(envoyé) && envoyé > 0) onProgress({ sent: Math.min(envoyé, taille), total: taille });
+    }, 700);
+  }
+
+  // Pas de délai maximal : un gros fichier sur un câble lent prend le temps
+  // qu'il prend, et une coupure arbitraire laisserait un fichier tronqué.
+  const out = await run(findAdb(), adbArgs(serial, ['push', local, distant]), { timeout: 0 });
+  if (sonde) clearInterval(sonde);
+
+  const texte = out.stdout + out.stderr;
+  if (!out.ok || /adb: error|failed to copy/i.test(texte)) {
+    throw new Error(expliqueTransfert(texte) || "l'envoi a échoué");
+  }
+  await scanMedia(serial, distant).catch(() => {});
+  if (onProgress) onProgress({ sent: taille, total: taille });
+  return { remote: distant, bytes: taille };
+}
+
+/// Installe une application depuis un fichier .apk.
+///
+/// `-r` : remplacer une version déjà présente en gardant ses données. Sans
+/// cela, réinstaller une application connue échoue sur ALREADY_EXISTS, ce qui
+/// n'apprend rien à personne.
+async function installApk(serial, local) {
+  const out = await run(findAdb(), adbArgs(serial, ['install', '-r', local]), { timeout: 0 });
+  const texte = out.stdout + out.stderr;
+  if (!out.ok || !/^Success/m.test(texte)) {
+    throw new Error(expliqueTransfert(texte) || "l'installation a échoué");
+  }
+  return true;
+}
+
+/// Traduit les plaintes d'adb et du gestionnaire de paquets.
+const CAUSES_TRANSFERT = [
+  [/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i,
+   'une version signée différemment est déjà installée. Désinstallez-la d\'abord sur le téléphone.'],
+  [/INSTALL_FAILED_VERSION_DOWNGRADE/i,
+   'la version installée sur le téléphone est plus récente que ce fichier.'],
+  [/INSTALL_FAILED_INSUFFICIENT_STORAGE|No space left/i,
+   "le téléphone n'a plus assez d'espace libre."],
+  [/INSTALL_PARSE_FAILED|not a valid apk|Invalid file|doesn't end \.apk/i,
+   "ce fichier n'est pas une application Android valide."],
+  [/INSTALL_FAILED_USER_RESTRICTED|user restricted/i,
+   "le téléphone refuse les installations par USB. Autorisez « Installer via USB » dans les options de développement."],
+  [/Permission denied|Read-only file system/i,
+   "le téléphone a refusé l'écriture dans ce dossier."],
+  [/device unauthorized|not authorized/i,
+   "le téléphone n'a pas autorisé cet ordinateur. Acceptez la demande de débogage USB."],
+  [/device not found|device offline/i,
+   'le téléphone a été perdu en cours de route. Vérifiez le câble.'],
+];
+
+function expliqueTransfert(texte) {
+  for (const [motif, cause] of CAUSES_TRANSFERT) if (motif.test(texte)) return cause;
+  // À défaut, la plainte brute d'adb vaut mieux que rien.
+  const ligne = texte.split('\n').find((l) => /error|failure|failed/i.test(l));
+  return ligne ? ligne.replace(/^adb:\s*(error:\s*)?/i, '').trim() : null;
+}
+
+/// Les schémas d'adresse qu'on accepte d'ouvrir sur le téléphone.
+///
+/// La liste est close : `am start -a VIEW` sur une adresse `file://` ou
+/// `content://` choisie ailleurs ferait ouvrir au téléphone un contenu qu'il
+/// n'a pas demandé.
+const SCHEMES = /^(https?|tel|mailto|sms|smsto|geo|market):/i;
+
+/// Ouvre un lien sur le téléphone, dans l'application qui en a la charge.
+async function openUrl(serial, url) {
+  const adresse = String(url || '').trim();
+  if (!SCHEMES.test(adresse)) throw new Error('adresse non prise en charge');
+  if (/[\s]/.test(adresse)) throw new Error('adresse invalide');
+  const out = await adb(
+    serial,
+    ['shell', `am start --user ${OWNER_USER} -a android.intent.action.VIEW -d ${quote(adresse)}`],
+    { timeout: 15000 }
+  );
+  const texte = out.stdout + out.stderr;
+  if (!out.ok || /Error|Exception/.test(texte)) {
+    throw new Error(/no activity found/i.test(texte)
+      ? "aucune application du téléphone ne sait ouvrir ce lien"
+      : "le téléphone a refusé d'ouvrir ce lien");
+  }
+  return adresse;
 }
 
 // ── Réseaux Wi-Fi ───────────────────────────────────────────────────────────
@@ -716,6 +953,18 @@ function tail(log, count = 12) {
 
 let nextSessionId = 1;
 
+/// Tue le serveur scrcpy resté sur l'appareil après un lancement avorté.
+///
+/// Quand un client meurt sans prévenir (watchdog, plantage), le processus
+/// serveur côté téléphone peut survivre et bloquer les lancements suivants :
+/// scrcpy pousse son serveur, affiche « Device: … », puis attend indéfiniment
+/// une fenêtre qui ne viendra jamais. Purge best-effort : si l'appareil est
+/// déjà parti, il n'y a plus rien à nettoyer.
+function purgeStaleServer(serial) {
+  if (!serial) return;
+  adb(serial, ['shell', 'pkill -f com.genymobile.scrcpy'], { timeout: 5000 }).catch(() => {});
+}
+
 // Chaque application est un processus scrcpy autonome, sur son propre écran
 // virtuel. La fenêtre appartient au gestionnaire de fenêtres : rien n'est
 // reparenté, et une application qui tombe n'emporte pas les autres.
@@ -767,6 +1016,9 @@ function launchApp(serial, app, settings, hooks = {}) {
         return ready(null);
       }
       fail("aucune fenêtre au bout de 45 secondes — le lancement a été abandonné.");
+      // Le client meurt, mais le serveur côté téléphone peut lui survivre et
+      // faire échouer le lancement suivant en silence. On le purge.
+      purgeStaleServer(serial);
       try { child.kill('SIGTERM'); } catch (_) {}
     }, START_TIMEOUT);
 
@@ -840,6 +1092,7 @@ function launchApp(serial, app, settings, hooks = {}) {
       // retenue en tampon est justement arrivée à la fermeture.
       if (session.presumed && code && Date.now() - session.startedAt < START_TIMEOUT) {
         fail(`scrcpy s'est arrêté (code ${code}) sans ouvrir de fenêtre.`);
+        purgeStaleServer(serial);
         if (hooks.onUpdate) hooks.onUpdate(session);
         return;
       }
@@ -1111,6 +1364,13 @@ module.exports = {
   dndState,
   setDnd,
   setRadio,
+  pushFile,
+  installApk,
+  openUrl,
+  scanMedia,
+  remoteName,
+  expliqueTransfert,
+  DOSSIER_TELEPHONE,
   wifiScan,
   wifiSaved,
   wifiStatus,
@@ -1133,7 +1393,13 @@ module.exports = {
   parseAppLine,
   parseNotifications,
   parseVersion,
+  parseDisplayId,
   sessionArgs,
+  filterArgs,
+  supportedOptions,
   adb,
   shell,
+  shellOut,
+  pshell,
+  closeShell,
 };
