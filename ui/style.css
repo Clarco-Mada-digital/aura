@@ -139,6 +139,39 @@ body { padding:0.625rem; }
 
 .bar-actions { display: flex; gap:0.375rem; -webkit-app-region: no-drag; }
 
+/* ── Indicateurs de connectivité ───────────────────────────────────────── */
+
+.net {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--edge-soft);
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+}
+.net:hover { background: rgba(255, 255, 255, 0.07); }
+.net-item {
+  width: 1.375rem; height: 1.375rem;
+  display: grid; place-items: center;
+  color: var(--ok);
+  cursor: default;
+}
+.net-item svg { width: 0.9375rem; height: 0.9375rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* Les deux radios qui se basculent d'un clic. */
+#netWifi, #netBt { cursor: pointer; border-radius: 999px; }
+#netWifi:hover, #netBt:hover { background: rgba(255, 255, 255, 0.10); }
+/* Ordre parti, réponse pas encore revenue. */
+.net-item.busy { opacity: 0.45; }
+/* Éteint : estompé, sans disparaître — on voit que la radio existe. */
+.net-item.off { color: var(--faint); }
+/* Alerte (mode avion, Ne pas déranger) : ambre. */
+.net-item.warn { color: #ffd166; }
+/* Connecté réellement (IP obtenue) : point plus vif. */
+.net-item.live { color: #4ade80; }
+
 .icon-btn {
   position: relative;
   width:2.125rem; height:2.125rem;
@@ -410,7 +443,18 @@ body { padding:0.625rem; }
   animation: pulse 1.6s infinite;
 }
 
-.panel-body { flex: 1; overflow-y: auto; padding:0.875rem 1rem 1.25rem; display: flex; flex-direction: column; gap:0.625rem; }
+/* `min-height:0` est ici une ceinture : `overflow-y:auto` suffit déjà à
+   annuler la taille minimale automatique d'un élément flex, mais la règle
+   cesserait de protéger le jour où le défilement changerait de forme.
+   `overscroll-behavior` empêche le défilement de se propager à la coque une
+   fois le bas atteint. */
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding:0.875rem 1rem 1.25rem; display: flex; flex-direction: column; gap:0.625rem; }
+/* L'en-tête garde sa taille : c'est au corps de céder. */
+.panel-head { flex: none; }
+/* Le corps est une colonne flex : sans cette règle, ses enfants se laissent
+   comprimer pour tenir dans la hauteur — quarante réseaux devenaient quarante
+   traits d'un pixel au lieu de déborder et de défiler. */
+.panel-body > * { flex: 0 0 auto; }
 .panel-body::-webkit-scrollbar { width:0.5rem; }
 .panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius:0.5rem; }
 
@@ -503,7 +547,14 @@ body { padding:0.625rem; }
   border: 1px solid var(--edge);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
   animation: rise 140ms var(--ease);
+  /* Le widget se redimensionne : un menu plus haut que la fenêtre doit
+     défiler plutôt que de sortir par le bas. */
+  max-height: calc(100vh - 1rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+.menu::-webkit-scrollbar { width:0.5rem; }
+.menu::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius:0.5rem; }
 .menu-head {
   padding:0.375rem 0.625rem 0.5rem;
   font-size:0.6562rem; letter-spacing:1px; text-transform: uppercase;
@@ -529,6 +580,108 @@ body { padding:0.625rem; }
   color: var(--cyan); font-size:0.75rem;
 }
 .menu-item { position: relative; }
+
+/* ── Centre de contrôle (menu ⋯ de la barre) ─────────────────────────── */
+
+.menu.control { min-width: 15.5rem; padding: 0.5rem; }
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3125rem 0.25rem;
+}
+.control-row.wrap { flex-wrap: wrap; }
+.control-label {
+  flex: none;
+  min-width: 6.5rem;
+  font-size: 0.7187rem;
+  color: var(--muted);
+}
+.control-note { font-size: 0.6875rem; color: var(--faint); }
+.chip-toggle {
+  /* Une pastille garde sa taille : rétrécie pour tenir dans la rangée, elle
+     rognait son propre libellé (« Désactivé » amputé derrière le témoin).
+     C'est à la rangée de passer à la ligne — elle est en `wrap`. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 0.2812rem 0.625rem;
+  border-radius: 999px;
+  border: 1px solid var(--edge-soft);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: inherit; font-size: 0.7187rem;
+  cursor: pointer;
+  transition: all 140ms var(--ease);
+}
+.chip-toggle:hover { background: rgba(255, 255, 255, 0.10); color: var(--text); }
+.chip-toggle.on {
+  color: #fff;
+  background: rgba(124, 92, 255, 0.26);
+  border-color: rgba(124, 92, 255, 0.5);
+}
+/* L'état en toutes lettres à côté de l'interrupteur : la couleur seule ne se
+   lit pas sans point de comparaison. */
+.control-state { font-size: 0.7187rem; color: var(--muted); }
+
+/* Ordre parti, réponse pas encore revenue : l'état affiché est celui qu'on a
+   demandé, et le battement dit qu'il n'est pas encore confirmé. */
+.chip-toggle.busy, .control-row .switch.busy { animation: chip-pulse 1s ease-in-out infinite; }
+.chip-toggle:disabled { cursor: default; }
+.chip-toggle:disabled:not(.busy) { opacity: 0.55; }
+@keyframes chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ── Réseaux Wi-Fi ────────────────────────────────────────────────────── */
+
+.wifi-status { font-size:0.75rem; color: var(--text); padding:0 0.125rem 0.25rem; }
+.wifi-note { font-size:0.6875rem; color: var(--faint); line-height: 1.45; padding:0.25rem 0.125rem; }
+
+.ghost.wide { width: 100%; text-align: center; }
+.ghost.primary { color: #fff; background: rgba(124, 92, 255, 0.28); border-color: rgba(124, 92, 255, 0.5); }
+.ghost.primary:hover { background: rgba(124, 92, 255, 0.42); }
+.ghost.danger { color: #ff9aa8; border-color: rgba(255, 107, 129, 0.35); }
+.ghost.danger:hover { background: rgba(255, 107, 129, 0.18); color: #fff; }
+.ghost:disabled { opacity: 0.5; cursor: default; }
+
+.wifi-net {
+  border: 1px solid var(--edge-soft);
+  border-radius:0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+.wifi-net.faint { opacity: 0.72; }
+.wifi-head {
+  width: 100%;
+  display: flex; align-items: center; gap:0.625rem;
+  padding:0.5625rem 0.6875rem;
+  background: none; border: none; color: inherit;
+  font-family: inherit; text-align: left; cursor: pointer;
+}
+.wifi-head:hover { background: rgba(255, 255, 255, 0.06); }
+.wifi-texts { flex: 1; min-width: 0; }
+.wifi-ssid { font-size:0.8125rem; font-weight: 540; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wifi-meta { font-size:0.625rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.bars { width:1rem; height:0.75rem; flex: none; }
+.bars rect { fill: var(--ok); }
+.bars rect.off { fill: rgba(255, 255, 255, 0.16); }
+.lock { width:0.75rem; height:0.75rem; flex: none; fill: none; stroke: var(--faint); stroke-width: 2; }
+
+.wifi-form { display: flex; flex-direction: column; gap:0.4375rem; padding:0.125rem 0.6875rem 0.6875rem; }
+.wifi-row { display: flex; gap:0.375rem; align-items: center; }
+.wifi-row input { flex: 1; min-width: 0; }
+.wifi-form input, .wifi-form select {
+  font-family: inherit; font-size:0.75rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--edge);
+  padding:0.375rem 0.5625rem;
+  border-radius:0.5rem;
+  outline: none;
+}
+.wifi-form input:focus, .wifi-form select:focus { border-color: rgba(124, 92, 255, 0.6); }
 
 /* ── Divers ───────────────────────────────────────────────────────────── */
 

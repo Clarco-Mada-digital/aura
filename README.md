@@ -18,14 +18,22 @@ un grand écran.
 | **Favoris** | Une seule ligne, qui défile à l'horizontale ; ★ épingle, le glisser-déposer réordonne |
 | **Fenêtres** | Une application = un processus scrcpy = un écran virtuel Android |
 | **Notifications** | Balayez pour écarter, cliquez pour ouvrir l'application qui l'a posée |
+| **Connectivité** | Wi-Fi, Bluetooth, mode avion et Ne pas déranger visibles d'un coup d'œil dans la barre |
+| **Centre de contrôle** | Le bouton ⋯ regroupe écran du téléphone, épingle, réglages, volume média, sonnerie/vibreur/silencieux, et bascules Wi-Fi / Bluetooth / données |
 | **Raccourci global** | `Ctrl+Alt+Espace` fait apparaître ou disparaître le widget |
 | **Icône de barre** | Le widget vit dans la zone de notification, jamais dans la barre des tâches |
 
 Le widget apparaît **en haut, au centre** de l'écran où se trouve le pointeur,
 s'ajuste à la hauteur de son contenu, et **reste en place** : ouvrir une
-application ne le referme pas. L'épingle (allumée par défaut) le maintient
-visible même quand il perd le focus ; éteignez-la pour un comportement de
-projecteur, qui s'efface au premier clic ailleurs.
+application ne le referme pas. L'épingle vit dans le centre de contrôle (bouton
+⋯, allumée par défaut) et maintient le widget visible même quand il perd le
+focus ; éteignez-la pour un comportement de projecteur, qui s'efface au premier
+clic ailleurs.
+
+La barre reste volontairement courte : à gauche l'appareil et ses radios, à
+droite trois boutons seulement (notifications, ⋯, masquer). Tout le reste —
+miroir, épingle, réglages, volume, sonnerie, radios — se déplie au clic sur ⋯,
+et chaque action y met l'état à jour immédiatement.
 
 ### Clavier
 

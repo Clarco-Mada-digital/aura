@@ -157,6 +157,15 @@ async function shell(serial, command, opts) {
   return out.ok ? out.stdout : '';
 }
 
+/// La même chose, mais sans jeter le verdict : `{ ok, stdout, stderr }`.
+///
+/// Les contrôles rapides ont besoin de distinguer « la commande a répondu du
+/// vide » de « la commande a échoué » — ce que la forme texte de `shell` ne
+/// permet pas.
+function shellOut(serial, command, opts) {
+  return adb(serial, ['shell', command], opts);
+}
+
 async function startServer() {
   await run(findAdb(), ['start-server'], { timeout: 15000 });
 }
@@ -188,6 +197,330 @@ async function deviceInfo(serial) {
     // status 2 = en charge, 5 = pleine.
     charging: status ? status[1] === '2' || status[1] === '5' : false,
   };
+}
+
+// ── Connectivité ────────────────────────────────────────────────────────────
+
+/// État radio du téléphone, lu en un seul appel shell.
+///
+/// Chaque requête séparée coûterait un processus adb ; on les enchaîne donc
+/// dans le même shell côté appareil. Les réglages `settings get` répondent en
+/// quelques octets et existent sur toutes les versions d'Android supportées.
+async function connectivity(serial) {
+  const script = [
+    'echo wifi=$(settings get global wifi_on)',
+    'echo bt=$(settings get global bluetooth_on)',
+    'echo plane=$(settings get global airplane_mode_on)',
+    'echo data=$(settings get global mobile_data)',
+    // wlan0 avec une adresse IP = réellement associé à un réseau.
+    'ip addr show wlan0 2>/dev/null | grep -q "inet " && echo assoc=1 || echo assoc=0',
+  ].join('; ');
+  const out = await shellOut(serial, script, { timeout: 8000 });
+  if (!out.ok) return null;
+  const get = (name) => {
+    const m = new RegExp(`^${name}=(.*)$`, 'm').exec(out.stdout);
+    return m ? m[1].trim() : null;
+  };
+  const on = (v) => v === '1';
+  return {
+    wifi: on(get('wifi')),
+    wifiConnected: on(get('assoc')),
+    bluetooth: on(get('bt')),
+    airplane: on(get('plane')),
+    mobileData: on(get('data')),
+  };
+}
+
+// ── Contrôles rapides ───────────────────────────────────────────────────────
+
+/// Ce qui, dans la réponse du shell, dit qu'un ordre n'est pas passé.
+///
+/// Ces commandes ne confirment rien quand elles réussissent — au mieux elles
+/// annoncent ce qu'elles s'apprêtent à faire. Le refus, lui, est bavard :
+/// binaire absent, permission manquante, exception Java. C'est donc lui qu'on
+/// guette, plutôt qu'un accusé de réception qui n'existe pas.
+const REFUS = /Exception|inaccessible or not found|not found|permission denied|denied|Failure|Killed|^Error:/im;
+
+/// Touche matérielle injectée sur l'appareil.
+const pressKey = (serial, code) => shell(serial, `input keyevent ${code}`, { timeout: 8000 });
+
+/// Volume du flux média.
+///
+/// L'outil canonique est `cmd media_session`, mais toutes les ROM n'ont pas
+/// le binaire `media` — les Samsung en sont dépourvus. On tente donc la cmd
+/// d'abord, et l'ancien outil en secours.
+async function mediaVolume(serial) {
+  const cmd = await shellOut(serial, 'cmd media_session volume --stream 3 --get', { timeout: 8000 });
+  // `cmd media_session` répond parfois sur la sortie d'erreur : on lit les deux.
+  const m = /volume is (\d+) in range \[0\.\.(\d+)\]/i.exec(cmd.stdout + cmd.stderr);
+  if (m) return { value: Number(m[1]), max: Number(m[2]) };
+
+  const legacy = await shellOut(serial, 'media volume --stream 3 --get', { timeout: 8000 });
+  const cur = /volume is (\d+)/i.exec(legacy.stdout + legacy.stderr);
+  const max = /max is (\d+)/i.exec(legacy.stdout + legacy.stderr);
+  if (!cur) return null;
+  return { value: Number(cur[1]), max: max ? Number(max[1]) : 15 };
+}
+
+async function changeMediaVolume(serial, delta) {
+  const now = await mediaVolume(serial);
+  if (!now) throw new Error('volume média illisible sur cet appareil');
+  const next = Math.max(0, Math.min(now.max, now.value + delta));
+  // Poser un volume ne se relit pas dans la réponse : `cmd media_session` se
+  // contente d'annoncer son intention (« [V] will set volume to index=7 »).
+  // Exiger un « volume is » faisait tomber dans la solution de repli, absente
+  // des Samsung — et tout échouait alors qu'il ne s'était rien passé de mal.
+  // On juge donc sur le refus, pas sur la confirmation.
+  const applique = async (command) => {
+    const out = await shellOut(serial, command, { timeout: 8000 });
+    return out.ok && !REFUS.test(out.stdout + out.stderr);
+  };
+  const posé =
+    (await applique(`cmd media_session volume --stream 3 --set ${next}`)) ||
+    (await applique(`media volume --stream 3 --set ${next}`));
+  if (!posé) throw new Error('le réglage du volume a été refusé par l\'appareil');
+  return { value: next, max: now.max };
+}
+
+/// Mode de sonnerie : 0 silencieux, 1 vibreur, 2 normal.
+///
+/// Le réglage passe par `settings put`, que le shell adb a le droit d'écrire ;
+/// il est appliqué immédiatement par AudioService, sans redémarrage.
+const RINGER = { silent: 0, vibrate: 1, normal: 2 };
+async function ringerMode(serial) {
+  const out = await shellOut(serial, 'settings get global mode_ringer', { timeout: 8000 });
+  if (!out.ok) return null;
+  const raw = out.stdout.trim();
+  const found = Object.entries(RINGER).find(([, v]) => String(v) === raw);
+  return found ? found[0] : null;
+}
+
+async function setRingerMode(serial, mode) {
+  const value = RINGER[mode];
+  if (value === undefined) throw new Error(`mode de sonnerie inconnu : ${mode}`);
+  const out = await shellOut(serial, `settings put global mode_ringer ${value}`, { timeout: 8000 });
+  if (!out.ok || REFUS.test(out.stdout + out.stderr)) throw new Error('le mode de sonnerie a été refusé par l\'appareil');
+  return mode;
+}
+
+/// Ne pas déranger. `cmd notification set_dnd` existe depuis Android 8 ;
+/// « priority » laisse passer les favoris, c'est le compromis le plus utile.
+async function dndState(serial) {
+  const out = await shellOut(serial, 'settings get global zen_mode', { timeout: 8000 });
+  if (!out.ok) return null;
+  const raw = out.stdout.trim();
+  // « null » = réglage absent : on ne sait pas, plutôt que « activé ».
+  if (!raw || raw === 'null') return null;
+  return raw !== '0';
+}
+
+async function setDnd(serial, on) {
+  const out = await shellOut(serial, `cmd notification set_dnd ${on ? 'priority' : 'off'}`, { timeout: 8000 });
+  if (!out.ok || REFUS.test(out.stdout + out.stderr)) throw new Error('Ne pas déranger a été refusé par l\'appareil');
+  return on;
+}
+
+/// Radio Wi-Fi, Bluetooth ou données mobiles. `svc` agit comme le panneau de
+/// réglages : le shell adb porte les mêmes permissions qu'un utilisateur système.
+async function setRadio(serial, radio, on) {
+  const known = { wifi: true, bluetooth: true, data: true };
+  if (!known[radio]) throw new Error(`radio inconnue : ${radio}`);
+  const out = await shellOut(serial, `svc ${radio} ${on ? 'enable' : 'disable'}`, { timeout: 10000 });
+  // `svc` sort en 0 même quand il refuse ; sa plainte part sur la sortie
+  // d'erreur (« Killed », « Security exception »…), qu'il faut donc lire.
+  if (!out.ok || REFUS.test(out.stdout + out.stderr)) {
+    throw new Error(`la radio ${radio} a été refusée par l'appareil`);
+  }
+  return on;
+}
+
+// ── Réseaux Wi-Fi ───────────────────────────────────────────────────────────
+//
+// Ce que le shell ADB peut faire sans root, vérifié sur Android 13 :
+//
+//   lire       `cmd wifi status`, `list-scan-results`, `list-networks`  → oui
+//   oublier    `cmd wifi forget-network <id>`                           → oui
+//   suggérer   `cmd wifi add-suggestion …`                              → oui
+//   connecter  `cmd wifi connect-network` / `add-network`               → NON
+//
+// Les deux dernières lèvent « Uid 2000 does not have access ». Rejoindre un
+// réseau depuis l'ordinateur passe donc forcément par une suggestion, que le
+// téléphone fait valider d'une tape — Android ne laisse pas une machine
+// branchée en USB choisir seule le réseau du téléphone, et c'est heureux.
+
+/// Une ligne de `cmd wifi list-scan-results`.
+///
+///     BSSID              Frequency  RSSI        Age(sec)  SSID    Flags
+///     1e:dd:32:27:23:82  2412       -90(0:-90)  80,695    Chez X  [WPA2-PSK-CCMP][ESS]
+///
+/// Le SSID peut contenir des espaces — et même des crochets : « Chez Jean
+/// [maison] » est un nom de réseau parfaitement légal. Les drapeaux, eux, sont
+/// toujours accolés les uns aux autres en fin de ligne ; c'est cette suite
+/// sans espace qui sert de borne, et non le premier crochet venu.
+function parseScanLine(line) {
+  const m = /^\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s+(\d+)\s+(-?\d+)\([^)]*\)\s+\S+\s+(.*?)\s*((?:\[[^\]]*\])+)\s*$/i.exec(line);
+  if (!m) return null;
+  const flags = m[5];
+  return {
+    bssid: m[1],
+    frequency: Number(m[2]),
+    // 2,4 GHz et 5 GHz : la bande dit plus que la fréquence à l'utilisateur.
+    band: Number(m[2]) >= 5000 ? '5 GHz' : '2,4 GHz',
+    rssi: Number(m[3]),
+    ssid: m[4],
+    flags,
+    security: securityOf(flags),
+    // Un réseau qui ne diffuse pas son nom n'apparaît que par son BSSID.
+    hidden: !m[4],
+  };
+}
+
+/// Le type de sécurité, dans le vocabulaire d'`add-suggestion`.
+function securityOf(flags) {
+  if (/SAE/.test(flags)) return 'wpa3';
+  if (/PSK/.test(flags)) return 'wpa2';
+  if (/OWE/.test(flags)) return 'owe';
+  if (/EAP/.test(flags)) return 'eap'; // hors de portée d'une suggestion shell
+  return 'open';
+}
+
+/// Barreaux d'antenne, de 0 à 4, à partir du RSSI en dBm.
+function signalBars(rssi) {
+  if (rssi >= -55) return 4;
+  if (rssi >= -66) return 3;
+  if (rssi >= -77) return 2;
+  if (rssi >= -88) return 1;
+  return 0;
+}
+
+async function wifiScan(serial, { rescan = true } = {}) {
+  if (rescan) await shellOut(serial, 'cmd wifi start-scan', { timeout: 8000 });
+  const out = await shellOut(serial, 'cmd wifi list-scan-results', { timeout: 15000 });
+  if (!out.ok) return [];
+
+  // Un même réseau est vu par plusieurs bornes : on garde la mieux reçue.
+  const meilleurs = new Map();
+  for (const line of out.stdout.split('\n')) {
+    const point = parseScanLine(line);
+    if (!point) continue;
+    const clé = point.ssid || point.bssid;
+    const connu = meilleurs.get(clé);
+    if (!connu || point.rssi > connu.rssi) meilleurs.set(clé, point);
+  }
+  return [...meilleurs.values()]
+    .map((r) => ({ ...r, bars: signalBars(r.rssi) }))
+    .sort((a, b) => b.rssi - a.rssi);
+}
+
+/// Les réseaux enregistrés sur le téléphone.
+///
+/// La commande liste une ligne par type de sécurité accepté : le même réseau
+/// revient deux fois (wpa2-psk puis wpa3-sae). On dédoublonne par identifiant.
+async function wifiSaved(serial) {
+  const out = await shellOut(serial, 'cmd wifi list-networks', { timeout: 10000 });
+  if (!out.ok) return [];
+  const réseaux = new Map();
+  for (const line of out.stdout.split('\n')) {
+    const m = /^\s*(\d+)\s+(.*?)\s{2,}(\S+)\s*$/.exec(line);
+    if (!m || m[2] === 'SSID') continue;
+    const id = Number(m[1]);
+    if (!réseaux.has(id)) réseaux.set(id, { id, ssid: m[2].trim(), security: m[3].replace(/\^$/, '') });
+  }
+  return [...réseaux.values()];
+}
+
+/// L'état de la connexion : allumée ? associée ? à quoi ?
+async function wifiStatus(serial) {
+  const out = await shellOut(serial, 'cmd wifi status', { timeout: 10000 });
+  if (!out.ok) return null;
+  const texte = out.stdout;
+  const connecté = /Wifi is connected to "?([^"\n]+)"?/i.exec(texte);
+  const ssid = /\bSSID:\s*"([^"]+)"/.exec(texte);
+  return {
+    enabled: /Wifi is enabled/i.test(texte),
+    connected: Boolean(connecté || ssid),
+    ssid: (connecté ? connecté[1] : ssid ? ssid[1] : '').trim() || null,
+  };
+}
+
+/// Oublier un réseau enregistré.
+async function wifiForget(serial, networkId) {
+  const id = Number(networkId);
+  if (!Number.isInteger(id) || id < 0) throw new Error('identifiant de réseau invalide');
+  const out = await shellOut(serial, `cmd wifi forget-network ${id}`, { timeout: 10000 });
+  const texte = out.stdout + out.stderr;
+  if (!out.ok || REFUS.test(texte) || /Forget failed/i.test(texte)) {
+    throw new Error("le téléphone a refusé d'oublier ce réseau");
+  }
+  return true;
+}
+
+const SECURITES = new Set(['open', 'owe', 'wpa2', 'wpa3']);
+
+/// Proposer un réseau au téléphone.
+///
+/// C'est le seul chemin ouvert sans root : la suggestion est déposée, et
+/// Android demande à l'utilisateur, **sur le téléphone**, s'il accepte de s'y
+/// connecter (drapeau `-s`). Sans cette tape, rien ne se passe : une machine
+/// branchée en USB ne choisit pas le réseau du téléphone.
+///
+/// Le mot de passe traverse le shell de l'appareil : il apparaît le temps d'un
+/// battement dans la liste des processus du téléphone. C'est inévitable par
+/// cette voie — raison de plus pour ne jamais l'écrire dans le journal.
+async function wifiSuggest(serial, { ssid, security = 'wpa2', passphrase = '', hidden = false }) {
+  const nom = String(ssid || '').trim();
+  if (!nom) throw new Error('nom de réseau vide');
+  if (!SECURITES.has(security)) throw new Error(`sécurité non prise en charge : ${security}`);
+  const avecClé = security === 'wpa2' || security === 'wpa3';
+  if (avecClé && !passphrase) throw new Error('ce réseau demande un mot de passe');
+  if (avecClé && (passphrase.length < 8 || passphrase.length > 63)) {
+    throw new Error('un mot de passe Wi-Fi compte entre 8 et 63 caractères');
+  }
+
+  // Une suggestion homonyme prendrait la place de l'ancienne sans prévenir :
+  // on retire d'abord, pour repartir d'un état connu.
+  await shellOut(serial, `cmd wifi remove-suggestion ${quote(nom)}`, { timeout: 8000 });
+
+  const morceaux = ['cmd wifi add-suggestion', quote(nom), security];
+  if (avecClé) morceaux.push(quote(passphrase));
+  morceaux.push('-s'); // soumettre à l'utilisateur du téléphone
+  if (hidden) morceaux.push('-h');
+  const out = await shellOut(serial, morceaux.join(' '), { timeout: 15000 });
+  const texte = out.stdout + out.stderr;
+  if (!out.ok || REFUS.test(texte)) {
+    throw new Error(texte.split('\n').find((l) => /Exception|error/i.test(l))?.trim() || 'la suggestion a été refusée par le téléphone');
+  }
+  return { ssid: nom, security, hidden };
+}
+
+/// Les suggestions déposées par Aura, pour pouvoir les retirer.
+async function wifiSuggestions(serial) {
+  const out = await shellOut(serial, 'cmd wifi list-suggestions', { timeout: 10000 });
+  if (!out.ok) return [];
+  return out.stdout
+    .split('\n')
+    .map((l) => /^\s*(.*?)\s{2,}(\S+)\s*$/.exec(l))
+    .filter((m) => m && m[1] && m[1] !== 'SSID')
+    .map((m) => ({ ssid: m[1].trim(), security: m[2].replace(/\^$/, '') }));
+}
+
+async function wifiUnsuggest(serial, ssid) {
+  const out = await shellOut(serial, `cmd wifi remove-suggestion ${quote(String(ssid))}`, { timeout: 10000 });
+  return out.ok;
+}
+
+/// Ouvre les réglages Wi-Fi sur le téléphone.
+///
+/// La voie de secours quand la suggestion ne suffit pas — réseau d'entreprise,
+/// portail captif, mot de passe à changer. Avec le miroir ouvert, le clavier de
+/// l'ordinateur tape directement dans le champ du téléphone.
+async function openWifiSettings(serial) {
+  const out = await adb(
+    serial,
+    ['shell', `am start --user ${OWNER_USER} -a android.settings.WIFI_SETTINGS`],
+    { timeout: 10000 }
+  );
+  return out.ok && !/Error|Exception/.test(out.stdout + out.stderr);
 }
 
 // ── Inventaire des applications ─────────────────────────────────────────────
@@ -284,6 +617,28 @@ function parseDisplayId(line) {
   return m ? Number(m[1]) : null;
 }
 
+/// Le signe qu'une fenêtre est bien à l'écran, en miroir.
+///
+/// Le miroir ne crée pas d'écran virtuel : il n'y a donc pas de `(id=…)` à
+/// attendre, et guetter celui-ci revenait à déclarer perdu un lancement qui
+/// marchait — le chien de garde tuait la fenêtre au bout de 45 secondes.
+/// scrcpy annonce en revanche son moteur de rendu et sa texture au moment où
+/// la fenêtre s'ouvre ; le libellé varie selon les versions, d'où l'alternative.
+const MIRROR_READY = /INFO:\s*(?:Renderer|Initial texture|Texture|Device screen|Display)\b/i;
+
+/// Délai au bout duquel un miroir encore vivant est tenu pour affiché.
+///
+/// Ces annonces n'arrivent pas forcément à temps : branchée sur un tube, la
+/// sortie standard de scrcpy est mise en mémoire tampon par blocs et ne part
+/// qu'une fois pleine — parfois à la fermeture. Seuls les messages du serveur
+/// (`[server] …`) et les erreurs, écrites sur la sortie d'erreur, arrivent
+/// tout de suite. C'est pourquoi les fenêtres d'application, qui attendent une
+/// ligne du serveur, ont toujours marché là où le miroir ne remontait rien.
+///
+/// Un scrcpy toujours vivant quelques secondes après le lancement, et muet
+/// d'erreurs, a donc ouvert sa fenêtre : rester à l'écouter n'apprendrait rien.
+const MIRROR_GRACE = 6000;
+
 /// Les options longues que ce binaire scrcpy connaît réellement.
 ///
 /// Les distributions livrent des versions très variables : une 3.3.4 passe le
@@ -333,7 +688,9 @@ const CAUSES = [
    "l'appareil a refusé de créer un écran virtuel. Les écrans virtuels demandent Android 11 ou plus récent ; certaines surcouches les bloquent aussi tant que l'écran est verrouillé."],
   [/device unauthorized|not authorized/i,
    "le téléphone n'a pas autorisé cet ordinateur. Déverrouillez-le et acceptez la demande de débogage USB (elle est propre à chaque machine)."],
-  [/device not found|no devices\/emulators|device offline/i,
+  // « Could not find ADB device X » parle du téléphone, pas du binaire adb :
+  // il doit passer avant la règle sur adb introuvable, qui l'attrapait.
+  [/Could not find ADB device|device not found|no devices\/emulators|device offline/i,
    'le téléphone a été perdu en cours de route. Vérifiez le câble et le mode de connexion USB.'],
   [/adb: failed|could not find adb|Failed to execute adb/i,
    "adb n'a pas pu être lancé. Installez le moteur depuis les réglages d'Aura, il fournit sa propre copie d'adb."],
@@ -400,6 +757,15 @@ function launchApp(serial, app, settings, hooks = {}) {
     let watchdog = setTimeout(() => {
       watchdog = null;
       if (session.state !== 'starting') return;
+      // Un scrcpy toujours vivant, sans la moindre erreur au journal, a selon
+      // toute vraisemblance ouvert sa fenêtre : sa sortie ne dit simplement pas
+      // ce que cette version-ci annonce. Le tuer serait le pire des choix — on
+      // le laisse vivre et on note l'incertitude.
+      const muet = child.exitCode === null && !session.log.some((l) => /\bERROR\b/.test(l));
+      if (muet) {
+        session.log.push('[aura] démarrage non confirmé par scrcpy — session supposée active.');
+        return ready(null);
+      }
       fail("aucune fenêtre au bout de 45 secondes — le lancement a été abandonné.");
       try { child.kill('SIGTERM'); } catch (_) {}
     }, START_TIMEOUT);
@@ -418,17 +784,34 @@ function launchApp(serial, app, settings, hooks = {}) {
       if (hooks.onFail) hooks.onFail(session);
     };
 
+    const ready = (displayId, { presumed = false } = {}) => {
+      if (session.state === 'running') return;
+      session.state = 'running';
+      session.presumed = presumed;
+      if (displayId !== null) session.displayId = displayId;
+      if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+      if (grace) { clearTimeout(grace); grace = null; }
+      if (hooks.onUpdate) hooks.onUpdate(session);
+    };
+
+    // Le miroir n'a pas de ligne de serveur à attendre : c'est le fait de
+    // tenir debout, sans erreur, qui fait foi.
+    let grace = settings.mirror
+      ? setTimeout(() => {
+          grace = null;
+          if (session.state !== 'starting') return;
+          if (child.exitCode !== null || session.log.some((l) => /\bERROR\b/.test(l))) return;
+          ready(null, { presumed: true });
+        }, MIRROR_GRACE)
+      : null;
+
     const onLine = (line) => {
       if (!line.trim()) return;
       session.log.push(line);
       if (session.log.length > 120) session.log.shift();
       const displayId = parseDisplayId(line);
-      if (displayId !== null && session.state !== 'running') {
-        session.state = 'running';
-        session.displayId = displayId;
-        if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-        if (hooks.onUpdate) hooks.onUpdate(session);
-      }
+      if (displayId !== null) return ready(displayId);
+      if (settings.mirror && MIRROR_READY.test(line)) ready(null);
     };
 
     let acc = { out: '', err: '' };
@@ -450,7 +833,16 @@ function launchApp(serial, app, settings, hooks = {}) {
     });
     child.on('exit', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+      if (grace) { clearTimeout(grace); grace = null; }
       session.exitCode = code;
+      // Une session seulement *supposée* affichée qui meurt aussitôt sur un
+      // code d'erreur n'a jamais rien montré : c'est un échec, et la sortie
+      // retenue en tampon est justement arrivée à la fermeture.
+      if (session.presumed && code && Date.now() - session.startedAt < START_TIMEOUT) {
+        fail(`scrcpy s'est arrêté (code ${code}) sans ouvrir de fenêtre.`);
+        if (hooks.onUpdate) hooks.onUpdate(session);
+        return;
+      }
       // Sortir avant d'avoir affiché quoi que ce soit, c'est un échec — pas
       // une fermeture. La différence compte : dans un cas on prévient, dans
       // l'autre on retire simplement la vignette.
@@ -710,6 +1102,25 @@ module.exports = {
   startServer,
   listDevices,
   deviceInfo,
+  connectivity,
+  pressKey,
+  mediaVolume,
+  changeMediaVolume,
+  ringerMode,
+  setRingerMode,
+  dndState,
+  setDnd,
+  setRadio,
+  wifiScan,
+  wifiSaved,
+  wifiStatus,
+  wifiForget,
+  wifiSuggest,
+  wifiSuggestions,
+  wifiUnsuggest,
+  openWifiSettings,
+  parseScanLine,
+  signalBars,
   listApps,
   launchApp,
   listNotifications,

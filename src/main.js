@@ -683,6 +683,56 @@ function registerIpc() {
     return { device: state.info, error: state.error, apps: appsCache.apps, collectedAt: appsCache.collectedAt };
   });
 
+  // État radio du téléphone. Rien de bloquant : si la lecture échoue, l'interface
+  // affiche simplement les icônes au repos.
+  ipcMain.handle('device:connectivity', async () => {
+    if (!current.serial) return null;
+    return device.connectivity(current.serial).catch(() => null);
+  });
+
+  /// Tout ce que le centre de contrôle affiche, en un seul aller-retour USB :
+  /// radios, volume média, mode de sonnerie, Ne pas déranger.
+  ipcMain.handle('device:quickstate', async () => {
+    if (!current.serial) return null;
+    const [net, vol, ringer, dnd] = await Promise.all([
+      device.connectivity(current.serial).catch(() => null),
+      device.mediaVolume(current.serial).catch(() => null),
+      device.ringerMode(current.serial).catch(() => null),
+      device.dndState(current.serial).catch(() => null),
+    ]);
+    return { net, volume: vol, ringer, dnd };
+  });
+
+  const avecAppareil = (fn) => async (_e, ...args) => {
+    if (!current.serial) throw new Error('aucun appareil connecté');
+    return fn(current.serial, ...args);
+  };
+
+  /// Tout le panneau Wi-Fi en un aller-retour : état, réseaux en portée,
+  /// réseaux enregistrés. Le scan dure quelques secondes, d'où le délai large
+  /// laissé au rendu côté interface.
+  ipcMain.handle('wifi:list', avecAppareil(async (serial, rescan = true) => {
+    const [status, scan, saved] = await Promise.all([
+      device.wifiStatus(serial).catch(() => null),
+      device.wifiScan(serial, { rescan }).catch(() => []),
+      device.wifiSaved(serial).catch(() => []),
+    ]);
+    return { status, scan, saved };
+  }));
+
+  // Le mot de passe s'arrête ici : aucune de ces poignées ne journalise ses
+  // arguments, et `device.wifiSuggest` ne les écrit nulle part non plus.
+  ipcMain.handle('wifi:join', avecAppareil((serial, demande) => device.wifiSuggest(serial, demande || {})));
+  ipcMain.handle('wifi:forget', avecAppareil((serial, id) => device.wifiForget(serial, id)));
+  ipcMain.handle('wifi:unsuggest', avecAppareil((serial, ssid) => device.wifiUnsuggest(serial, ssid)));
+  ipcMain.handle('wifi:suggestions', avecAppareil((serial) => device.wifiSuggestions(serial)));
+  ipcMain.handle('wifi:settings', avecAppareil((serial) => device.openWifiSettings(serial)));
+
+  ipcMain.handle('quick:volume', avecAppareil((serial, delta) => device.changeMediaVolume(serial, delta)));
+  ipcMain.handle('quick:ringer', avecAppareil((serial, mode) => device.setRingerMode(serial, mode)));
+  ipcMain.handle('quick:dnd', avecAppareil((serial, on) => device.setDnd(serial, on)));
+  ipcMain.handle('quick:radio', avecAppareil((serial, radio, on) => device.setRadio(serial, radio, on)));
+
   ipcMain.handle('apps:refresh', async () => {
     const fresh = await refreshApps();
     return { apps: fresh.apps, collectedAt: fresh.collectedAt };

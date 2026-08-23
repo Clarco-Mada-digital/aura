@@ -420,7 +420,7 @@ function renderEngineMissing() {
     } catch (err) {
       cta.disabled = false;
       bar.hidden = true;
-      note.textContent = String(err.message || err);
+      note.textContent = messageErreur(err);
       toast('Installation impossible', true);
     }
   };
@@ -938,6 +938,275 @@ function closeMenu() {
   if (open) open.remove();
 }
 
+// ── État des radios & centre de contrôle ───────────────────────────────────
+
+let quick = null; // dernier état connu : { net, volume, ringer, dnd }
+
+/// Indicateurs de la barre : allumé, éteint (estompé), ou alerte (mode avion).
+function renderNet(net) {
+  const cluster = $('net');
+  if (!net) { cluster.hidden = true; return; }
+  cluster.hidden = false;
+  const wifi = $('netWifi');
+  wifi.classList.toggle('off', !net.wifi);
+  wifi.classList.toggle('live', net.wifi && net.wifiConnected);
+  wifi.title = (net.wifi
+    ? (net.wifiConnected ? 'Wi-Fi connecté' : 'Wi-Fi actif, non connecté')
+    : 'Wi-Fi désactivé') + ' · cliquer pour basculer';
+  $('netBt').classList.toggle('off', !net.bluetooth);
+  $('netBt').title = (net.bluetooth ? 'Bluetooth actif' : 'Bluetooth désactivé') + ' · cliquer pour basculer';
+  $('netPlane').hidden = !net.airplane;
+  $('netDnd').hidden = !quick?.dnd;
+}
+
+/// Vrai le temps qu'un ordre parte et revienne. Le sondage périodique ne doit
+/// pas écraser entre-temps l'état que l'utilisateur vient de demander.
+let quickBusy = false;
+
+async function pollQuick() {
+  if (!state.device || document.hidden || quickBusy) return;
+  const fresh = await window.aura.quickState().catch(() => null);
+  if (!fresh) return;
+  quick = fresh;
+  renderNet(fresh.net);
+}
+
+/// Une radio met un instant à basculer pour de bon : relire son état trop tôt
+/// renverrait celui d'avant, et le bouton clignoterait dans le mauvais sens.
+const RELECTURE_RADIO = 1400;
+
+/// Le centre de contrôle : tout ce qu'on ne veut pas entasser dans la barre.
+///
+/// Le menu s'ouvre sur le dernier état connu, puis se rectifie tout seul : le
+/// faire attendre l'aller-retour USB donnait un menu qui met une seconde à
+/// apparaître, pour un état qui a rarement changé entre-temps.
+async function openControlMenu(x, y) {
+  closeMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'menu control';
+  // Ce qui reflète le téléphone est repeint sur place ; le reste ne bouge pas.
+  const live = document.createElement('div');
+  menu.appendChild(live);
+
+  const row = (label) => {
+    const r = document.createElement('div');
+    r.className = 'control-row';
+    const t = document.createElement('span');
+    t.className = 'control-label';
+    t.textContent = label;
+    r.appendChild(t);
+    return r;
+  };
+
+  const place = () => {
+    const box = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - box.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
+  };
+
+  // Une bascule doit se voir à l'instant du clic. L'aller-retour USB prend près
+  // d'une seconde : refermer le menu pour le rouvrir après coup laissait
+  // croire que le clic s'était perdu. On peint donc l'état demandé
+  // immédiatement, on marque le bouton en attente, et on rectifie avec ce que
+  // le téléphone répond vraiment.
+  let attente = null;
+  const action = async (clé, optimiste, run, délai = 0) => {
+    if (attente) return; // un ordre à la fois : deux se marcheraient dessus
+    attente = clé;
+    quickBusy = true;
+    if (quick) { optimiste(quick); renderNet(quick.net); }
+    paint();
+    let refusé = false;
+    try {
+      await run();
+    } catch (err) {
+      refusé = true;
+      toast(messageErreur(err), true);
+    }
+    if (délai && !refusé) await new Promise((r) => setTimeout(r, délai));
+    attente = null;
+    quickBusy = false;
+    await pollQuick(); // l'appareil reste la source de vérité
+    paint();
+  };
+
+  // Le volume ne se verrouille pas comme le reste : monter de trois crans, ce
+  // sont trois clics de suite, et chacun devait attendre l'aller-retour du
+  // précédent. Les crans s'accumulent donc, l'affichage suit au doigt, et un
+  // seul ordre part avec le total.
+  let volumeEnCours = false;
+  let volumeEnAttente = 0;
+  const stepVolume = async (delta) => {
+    if (!quick?.volume) return;
+    const { value, max } = quick.volume;
+    quick.volume = { ...quick.volume, value: Math.max(0, Math.min(max, value + delta)) };
+    volumeEnAttente += delta;
+    paint();
+    if (volumeEnCours) return; // le tour déjà lancé emportera ce cran-là
+    volumeEnCours = true;
+    quickBusy = true;
+    while (volumeEnAttente) {
+      const total = volumeEnAttente;
+      volumeEnAttente = 0;
+      try {
+        await window.aura.setVolume(total);
+      } catch (err) {
+        toast(messageErreur(err), true);
+        volumeEnAttente = 0;
+        break;
+      }
+    }
+    volumeEnCours = false;
+    quickBusy = false;
+    await pollQuick();
+    paint();
+  };
+
+  /// Un bouton-pastille : allumé, en attente, et cliquable une fois.
+  const chip = (label, { on = false, clé = label, optimiste = () => {}, run, délai = 0 }) => {
+    const b = document.createElement('button');
+    b.className = `chip-toggle${on ? ' on' : ''}${attente === clé ? ' busy' : ''}`;
+    b.textContent = label;
+    if (attente) b.disabled = true;
+    b.onclick = () => action(clé, optimiste, run, délai);
+    return b;
+  };
+
+  function paint() {
+    if (!menu.isConnected) return;
+    live.textContent = '';
+
+    // ─ Radios : cliquer bascule, l'état se voit aussi dans la barre.
+    if (quick?.net) {
+      const radios = row('Connexions');
+      radios.classList.add('wrap');
+      const radio = (label, champ, nom) => {
+        // La cible se fige ici : `optimiste` a déjà modifié `quick` quand
+        // `run` s'exécute, et relire l'état à ce moment inverserait l'ordre.
+        const cible = !quick.net[champ];
+        return chip(label, {
+          on: quick.net[champ],
+          clé: nom,
+          optimiste: (q) => { q.net[champ] = cible; },
+          run: () => window.aura.setRadio(nom, cible),
+          délai: RELECTURE_RADIO,
+        });
+      };
+      radios.append(
+        radio('Wi-Fi', 'wifi', 'wifi'),
+        radio('Bluetooth', 'bluetooth', 'bluetooth'),
+        radio('Données', 'mobileData', 'data'),
+      );
+      live.appendChild(radios);
+    } else {
+      // Sans état lisible, mieux vaut le dire que d'afficher un menu amputé :
+      // on saurait sinon ni que les bascules existent, ni pourquoi elles
+      // manquent.
+      const absent = row('Connexions');
+      const note = document.createElement('small');
+      note.className = 'control-note';
+      // Trois situations différentes, trois phrases : rien n'est plus
+      // décourageant qu'« illisible » alors que la lecture est en cours.
+      note.textContent = !state.device
+        ? 'aucun téléphone connecté'
+        : quick
+          ? 'état illisible sur cet appareil'
+          : 'lecture en cours…';
+      absent.appendChild(note);
+      live.appendChild(absent);
+    }
+
+    // ─ Volume média.
+    if (quick?.volume) {
+      const vol = row(`Volume média · ${quick.volume.value}/${quick.volume.max}`);
+      vol.classList.add('wrap');
+      const step = (delta, label) => {
+        const b = document.createElement('button');
+        b.className = 'chip-toggle';
+        b.textContent = label;
+        b.onclick = () => stepVolume(delta);
+        return b;
+      };
+      vol.append(step(-1, '−'), step(+1, '+'));
+      live.appendChild(vol);
+    }
+
+    // ─ Mode de sonnerie : trois segments exclusifs.
+    if (quick?.ringer) {
+      const ring = row('Sonnerie');
+      ring.classList.add('wrap');
+      for (const [mode, label] of [['normal', 'Sonnerie'], ['vibrate', 'Vibreur'], ['silent', 'Silencieux']]) {
+        ring.appendChild(chip(label, {
+          on: quick.ringer === mode,
+          clé: `ring-${mode}`,
+          optimiste: (q) => { q.ringer = mode; },
+          run: () => window.aura.setRinger(mode),
+        }));
+      }
+      live.appendChild(ring);
+    }
+
+    // ─ Ne pas déranger.
+    if (quick && typeof quick.dnd === 'boolean') {
+      const dndRow = row('Ne pas déranger');
+      dndRow.classList.add('wrap');
+      const cible = !quick.dnd;
+      // L'interrupteur des réglages, plutôt qu'une pastille : il glisse, il
+      // change de couleur, et le mot à côté lève le dernier doute. La couleur
+      // seule ne se lit pas quand on ne sait pas à quoi la comparer.
+      const b = document.createElement('button');
+      b.className = `switch${quick.dnd ? ' on' : ''}${attente === 'dnd' ? ' busy' : ''}`;
+      b.setAttribute('aria-label', `Ne pas déranger — ${quick.dnd ? 'activé' : 'désactivé'}`);
+      b.setAttribute('aria-pressed', String(quick.dnd));
+      if (attente) b.disabled = true;
+      b.onclick = () => action('dnd', (q) => { q.dnd = cible; }, () => window.aura.setDnd(cible));
+      const mot = document.createElement('span');
+      mot.className = 'control-state';
+      mot.textContent = quick.dnd ? 'Activé' : 'Désactivé';
+      dndRow.append(b, mot);
+      live.appendChild(dndRow);
+    }
+
+    place();
+  }
+
+  const sep = document.createElement('div');
+  sep.className = 'menu-sep';
+  menu.appendChild(sep);
+
+  // ─ Actions de fenêtre, anciennement boutons de la barre.
+  const item = (label, hint, checked, run) => {
+    const entry = document.createElement('button');
+    entry.className = `menu-item${checked ? ' checked' : ''}`;
+    const l = document.createElement('span');
+    l.textContent = label;
+    entry.appendChild(l);
+    if (hint) {
+      const h = document.createElement('small');
+      h.textContent = hint;
+      entry.appendChild(h);
+    }
+    entry.onclick = async () => { closeMenu(); await run(); };
+    return entry;
+  };
+
+  menu.appendChild(item('Réseaux Wi-Fi', 'Voir, rejoindre, oublier', false, () => openPanel('wifi')));
+  menu.appendChild(item('Écran du téléphone', 'Recopier l\'écran principal', false, openMirrorFromMenu));
+  menu.appendChild(item('Épingler la fenêtre', 'Rester affiché après un clic ailleurs', !!state.settings.pinned,
+    async () => {
+      state.settings = await window.aura.saveSettings({ pinned: !state.settings.pinned });
+      toast(state.settings.pinned ? 'Fenêtre épinglée' : 'Fenêtre libérée');
+    }));
+  menu.appendChild(item('Réglages', 'Ctrl+,', false, () => openPanel('settings')));
+
+  document.body.appendChild(menu);
+  paint();
+  // Puis l'état réel, qui arrive une demi-seconde plus tard sans avoir retenu
+  // l'ouverture du menu.
+  pollQuick().then(paint);
+}
+
 async function openAppMenu(app, x, y) {
   closeMenu();
   const override = (await window.aura.overrideFor(app.package).catch(() => ({}))) || {};
@@ -1011,7 +1280,15 @@ async function openAppMenu(app, x, y) {
   menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
 }
 
-document.addEventListener('click', (e) => { if (!e.target.closest('.menu')) closeMenu(); });
+// Un clic ailleurs referme les menus. « Ailleurs » se juge sur l'élément
+// cliqué — encore faut-il qu'il soit toujours dans la page : un bouton qui se
+// redessine sous le clic (les bascules du centre de contrôle) est détaché
+// avant que l'évènement ne remonte jusqu'ici, n'a donc plus d'ancêtre `.menu`,
+// et passait pour un clic extérieur. Le menu se refermait sur-le-champ.
+document.addEventListener('click', (e) => {
+  if (!e.target.isConnected) return;
+  if (!e.target.closest('.menu')) closeMenu();
+});
 window.addEventListener('blur', closeMenu);
 
 // ── Raccourci ───────────────────────────────────────────────────────────────
@@ -1080,7 +1357,7 @@ async function launch(pkg, once = null, numero = null) {
       const fait = await window.aura.dial(numero);
       if (!fait || !fait.ok) toast("Le composeur n'a pas répondu", true);
     } catch (err) {
-      toast(String(err.message || err), true);
+      toast(messageErreur(err), true);
     }
     return;
   }
@@ -1090,7 +1367,7 @@ async function launch(pkg, once = null, numero = null) {
     await window.aura.launch(pkg, once);
     toast(`${app ? app.name : pkg} s'ouvre…`);
   } catch (err) {
-    toast(String(err.message || err), true);
+    toast(messageErreur(err), true);
   }
 }
 
@@ -1151,7 +1428,7 @@ async function refreshApps() {
     renderAll();
     toast(`${fresh.apps.length} applications trouvées`);
   } catch (err) {
-    toast(String(err.message || err), true);
+    toast(messageErreur(err), true);
   } finally {
     state.refreshing = false;
   }
@@ -1171,6 +1448,7 @@ async function reconnect() {
   if (JSON.stringify([state.device, state.error, state.apps.length]) === before) return;
   compute();
   renderAll();
+  pollQuick();
 }
 
 // Signature du dernier ensemble de notifications connu.
@@ -1196,6 +1474,16 @@ async function loadNotifications() {
     state.notifications = await window.aura.notifications();
     renderNotifications();
   } catch (_) { /* l'appareil a pu être débranché */ }
+}
+
+/// Le message d'une erreur, débarrassé de l'emballage d'Electron.
+///
+/// Une exception levée dans le processus principal revient ici sous la forme
+/// « Error invoking remote method 'wifi:join': Error: … ». La phrase utile est
+/// à la fin ; le reste ne dit rien à personne et occupe toute la largeur.
+function messageErreur(err) {
+  const brut = String((err && err.message) || err || '');
+  return brut.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Uncaught )?Error:\s*/, '').trim() || 'échec inattendu';
 }
 
 let toastTimer = null;
@@ -1266,18 +1554,329 @@ function renderAll() {
 // ── Volets ──────────────────────────────────────────────────────────────────
 
 function openPanel(which) {
-  const notifs = $('panelNotifs');
-  const settings = $('panelSettings');
-  notifs.hidden = which !== 'notifs';
-  settings.hidden = which !== 'settings';
+  for (const [nom, id] of [['notifs', 'panelNotifs'], ['settings', 'panelSettings'], ['wifi', 'panelWifi']]) {
+    $(id).hidden = which !== nom;
+  }
   $('btnNotifs').classList.toggle('active', which === 'notifs');
-  $('btnSettings').classList.toggle('active', which === 'settings');
   if (which === 'notifs') pollNotifications();
   if (which === 'settings') renderSettings();
+  if (which === 'wifi') openWifi();
   fit();
 }
 
-const panelOpen = () => !$('panelNotifs').hidden || !$('panelSettings').hidden;
+const panelOpen = () =>
+  ['panelNotifs', 'panelSettings', 'panelWifi'].some((id) => !$(id).hidden);
+
+// ── Réseaux Wi-Fi ───────────────────────────────────────────────────────────
+//
+// Ce que le téléphone accepte d'un ordinateur branché en USB s'arrête à la
+// suggestion : Android exige une tape sur son propre écran avant de rejoindre
+// un réseau proposé de l'extérieur (voir `device.js`). L'interface le dit
+// franchement plutôt que de laisser croire à une connexion qui n'arrive pas.
+
+let wifi = { status: null, scan: [], saved: [], chargement: false, ouvert: null };
+
+/// Quatre barreaux d'antenne, dessinés en SVG.
+function antenne(bars) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 12');
+  svg.classList.add('bars');
+  for (let i = 0; i < 4; i++) {
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', String(i * 4));
+    r.setAttribute('y', String(9 - i * 3));
+    r.setAttribute('width', '2.6');
+    r.setAttribute('height', String(3 + i * 3));
+    r.setAttribute('rx', '1');
+    r.classList.toggle('off', i >= bars);
+    svg.appendChild(r);
+  }
+  return svg;
+}
+
+const CADENAS =
+  'M7 10V7.5a5 5 0 0 1 10 0V10M5.5 10h13v9h-13z';
+
+function cadenas() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.classList.add('lock');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', CADENAS);
+  svg.appendChild(p);
+  return svg;
+}
+
+async function openWifi(rescan = true) {
+  wifi.chargement = true;
+  renderWifi();
+  const data = await window.aura.wifiList(rescan).catch((err) => {
+    toast(messageErreur(err), true);
+    return null;
+  });
+  wifi.chargement = false;
+  if (data) Object.assign(wifi, data);
+  renderWifi();
+}
+
+function renderWifi() {
+  const body = $('wifiBody');
+  body.textContent = '';
+
+  const ligneÉtat = document.createElement('div');
+  ligneÉtat.className = 'wifi-status';
+  const s = wifi.status;
+  ligneÉtat.textContent = !s
+    ? 'État inconnu'
+    : !s.enabled
+      ? 'Wi-Fi désactivé sur le téléphone'
+      : s.connected
+        ? `Connecté à ${s.ssid || 'un réseau'}`
+        : 'Activé, connecté à aucun réseau';
+  body.appendChild(ligneÉtat);
+
+  // Le Wi-Fi éteint, il n'y a rien à chercher : on propose de l'allumer.
+  if (s && !s.enabled) {
+    const allumer = document.createElement('button');
+    allumer.className = 'ghost wide';
+    allumer.textContent = 'Activer le Wi-Fi';
+    allumer.onclick = async () => {
+      try {
+        await window.aura.setRadio('wifi', true);
+        toast('Wi-Fi activé');
+        setTimeout(() => openWifi(true), RELECTURE_RADIO);
+      } catch (err) { toast(messageErreur(err), true); }
+    };
+    body.appendChild(allumer);
+  }
+
+  if (wifi.chargement) {
+    const attente = document.createElement('div');
+    attente.className = 'wifi-note';
+    attente.textContent = 'Recherche des réseaux…';
+    body.appendChild(attente);
+  }
+
+  const enregistrés = new Map(wifi.saved.map((r) => [r.ssid, r]));
+
+  for (const réseau of wifi.scan) {
+    body.appendChild(ligneRéseau(réseau, enregistrés.get(réseau.ssid)));
+  }
+
+  if (!wifi.chargement && !wifi.scan.length) {
+    const vide = document.createElement('div');
+    vide.className = 'wifi-note';
+    vide.textContent = 'Aucun réseau capté.';
+    body.appendChild(vide);
+  }
+
+  // ─ Réseau caché : le seul moyen d'atteindre ce qui ne se diffuse pas.
+  const caché = document.createElement('button');
+  caché.className = 'ghost wide';
+  caché.textContent = wifi.ouvert === 'caché' ? 'Annuler' : 'Rejoindre un réseau masqué…';
+  caché.onclick = () => { wifi.ouvert = wifi.ouvert === 'caché' ? null : 'caché'; renderWifi(); };
+  body.appendChild(caché);
+  if (wifi.ouvert === 'caché') body.appendChild(formulaire(null));
+
+  // ─ Les réseaux enregistrés qu'on ne capte pas ici : utile pour faire le
+  //   ménage dans une liste qui s'allonge d'année en année.
+  const absents = wifi.saved.filter((r) => !wifi.scan.some((v) => v.ssid === r.ssid));
+  if (absents.length) {
+    const titre = document.createElement('div');
+    titre.className = 'settings-group';
+    titre.textContent = `Enregistrés, hors de portée (${absents.length})`;
+    body.appendChild(titre);
+    for (const r of absents) body.appendChild(ligneEnregistré(r));
+  }
+
+  // ─ La voie de secours, toujours visible : les réglages du téléphone.
+  const note = document.createElement('div');
+  note.className = 'wifi-note';
+  note.textContent =
+    'Android demande une validation sur le téléphone avant de rejoindre un réseau proposé depuis l’ordinateur. ' +
+    'Pour un portail captif ou un réseau d’entreprise, passez par ses réglages.';
+  body.appendChild(note);
+
+  const réglages = document.createElement('button');
+  réglages.className = 'ghost wide';
+  réglages.textContent = 'Ouvrir les réglages Wi-Fi du téléphone';
+  réglages.onclick = async () => {
+    try {
+      await window.aura.wifiSettings();
+      await window.aura.openMirror();
+      toast('Réglages Wi-Fi ouverts sur le téléphone');
+    } catch (err) { toast(messageErreur(err), true); }
+  };
+  body.appendChild(réglages);
+}
+
+function ligneRéseau(réseau, enregistré) {
+  const nom = réseau.ssid || `Réseau masqué (${réseau.bssid})`;
+  const bloc = document.createElement('div');
+  bloc.className = 'wifi-net';
+
+  const tête = document.createElement('button');
+  tête.className = 'wifi-head';
+  tête.appendChild(antenne(réseau.bars));
+
+  const textes = document.createElement('div');
+  textes.className = 'wifi-texts';
+  const titre = document.createElement('div');
+  titre.className = 'wifi-ssid';
+  titre.textContent = nom;
+  const détail = document.createElement('div');
+  détail.className = 'wifi-meta';
+  const bouts = [réseau.band, `${réseau.rssi} dBm`];
+  if (réseau.security === 'open') bouts.push('ouvert');
+  else if (réseau.security === 'eap') bouts.push('entreprise');
+  else bouts.push(réseau.security.toUpperCase());
+  if (enregistré) bouts.push('enregistré');
+  if (wifi.status?.connected && wifi.status.ssid === réseau.ssid) bouts.push('connecté');
+  détail.textContent = bouts.join(' · ');
+  textes.append(titre, détail);
+  tête.appendChild(textes);
+  if (réseau.security !== 'open') tête.appendChild(cadenas());
+
+  const clé = réseau.ssid || réseau.bssid;
+  tête.onclick = () => { wifi.ouvert = wifi.ouvert === clé ? null : clé; renderWifi(); };
+  bloc.appendChild(tête);
+
+  if (wifi.ouvert === clé) {
+    // Un réseau d'entreprise demande certificat et identifiant : la suggestion
+    // shell n'en est pas capable, autant le dire tout de suite.
+    if (réseau.security === 'eap') {
+      const note = document.createElement('div');
+      note.className = 'wifi-note';
+      note.textContent = "Réseau d'entreprise : à rejoindre depuis les réglages du téléphone.";
+      bloc.appendChild(note);
+    } else {
+      bloc.appendChild(formulaire(réseau));
+    }
+    if (enregistré) bloc.appendChild(boutonOublier(enregistré));
+  }
+  return bloc;
+}
+
+function ligneEnregistré(r) {
+  const bloc = document.createElement('div');
+  bloc.className = 'wifi-net faint';
+  const tête = document.createElement('button');
+  tête.className = 'wifi-head';
+  const textes = document.createElement('div');
+  textes.className = 'wifi-texts';
+  const titre = document.createElement('div');
+  titre.className = 'wifi-ssid';
+  titre.textContent = r.ssid;
+  const détail = document.createElement('div');
+  détail.className = 'wifi-meta';
+  détail.textContent = r.security;
+  textes.append(titre, détail);
+  tête.appendChild(textes);
+  const clé = `saved:${r.id}`;
+  tête.onclick = () => { wifi.ouvert = wifi.ouvert === clé ? null : clé; renderWifi(); };
+  bloc.appendChild(tête);
+  if (wifi.ouvert === clé) bloc.appendChild(boutonOublier(r));
+  return bloc;
+}
+
+function boutonOublier(r) {
+  const b = document.createElement('button');
+  b.className = 'ghost danger wide';
+  b.textContent = `Oublier « ${r.ssid} »`;
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await window.aura.wifiForget(r.id);
+      toast(`${r.ssid} oublié`);
+      wifi.ouvert = null;
+      await openWifi(false);
+    } catch (err) {
+      toast(messageErreur(err), true);
+      b.disabled = false;
+    }
+  };
+  return b;
+}
+
+/// Le formulaire de connexion. `réseau` nul = réseau masqué, dont il faut
+/// saisir le nom soi-même.
+function formulaire(réseau) {
+  const form = document.createElement('form');
+  form.className = 'wifi-form';
+
+  const champSsid = document.createElement('input');
+  champSsid.type = 'text';
+  champSsid.placeholder = 'Nom du réseau (SSID)';
+  champSsid.autocomplete = 'off';
+  champSsid.spellcheck = false;
+  if (réseau) champSsid.value = réseau.ssid;
+
+  const sécurité = document.createElement('select');
+  for (const [valeur, libellé] of [['wpa2', 'WPA/WPA2'], ['wpa3', 'WPA3'], ['open', 'Ouvert'], ['owe', 'Ouvert renforcé (OWE)']]) {
+    const o = document.createElement('option');
+    o.value = valeur;
+    o.textContent = libellé;
+    sécurité.appendChild(o);
+  }
+  sécurité.value = réseau ? réseau.security : 'wpa2';
+
+  const motDePasse = document.createElement('input');
+  motDePasse.type = 'password';
+  motDePasse.placeholder = 'Mot de passe';
+  motDePasse.autocomplete = 'off';
+
+  const voir = document.createElement('button');
+  voir.type = 'button';
+  voir.className = 'ghost';
+  voir.textContent = 'Voir';
+  voir.onclick = () => {
+    motDePasse.type = motDePasse.type === 'password' ? 'text' : 'password';
+    voir.textContent = motDePasse.type === 'password' ? 'Voir' : 'Cacher';
+  };
+
+  const clé = document.createElement('div');
+  clé.className = 'wifi-row';
+  clé.append(motDePasse, voir);
+
+  const majClé = () => { clé.hidden = sécurité.value === 'open' || sécurité.value === 'owe'; };
+  sécurité.onchange = majClé;
+  majClé();
+
+  const envoyer = document.createElement('button');
+  envoyer.type = 'submit';
+  envoyer.className = 'ghost primary wide';
+  envoyer.textContent = 'Proposer au téléphone';
+
+  // Un réseau capté sans son nom (trop loin, ou volontairement discret) se
+  // traite comme un réseau masqué : c'est à l'utilisateur de donner le SSID.
+  const àNommer = !réseau || réseau.hidden;
+  if (àNommer) form.append(champSsid, sécurité, clé, envoyer);
+  else form.append(sécurité, clé, envoyer);
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    envoyer.disabled = true;
+    envoyer.textContent = 'Envoi…';
+    try {
+      await window.aura.wifiJoin({
+        ssid: champSsid.value,
+        security: sécurité.value,
+        passphrase: motDePasse.value,
+        hidden: àNommer,
+      });
+      // Le mot de passe ne traîne pas dans la page une fois parti.
+      motDePasse.value = '';
+      wifi.ouvert = null;
+      toast('Proposé — validez la demande sur le téléphone', false, () => window.aura.openMirror());
+      await openWifi(false);
+    } catch (err) {
+      toast(messageErreur(err), true);
+      envoyer.disabled = false;
+      envoyer.textContent = 'Proposer au téléphone';
+    }
+  };
+  return form;
+}
 
 // ── Fond ────────────────────────────────────────────────────────────────────
 
@@ -1325,7 +1924,6 @@ async function boot() {
       true
     );
   }
-  $('btnPin').classList.toggle('active', !!state.settings.pinned);
 
   const install = await window.aura.engineTarget().catch(() => null);
   if (install) {
@@ -1337,6 +1935,7 @@ async function boot() {
   compute();
   renderAll();
   pollNotifications();
+  pollQuick();
   window.aura.callState().then((call) => { state.call = call; renderCall(); }).catch(() => {});
 
   // L'inventaire n'existe pas encore au tout premier lancement : on le
@@ -1347,18 +1946,67 @@ async function boot() {
 // Barre supérieure
 $('btnClose').onclick = () => window.aura.hide();
 $('btnNotifs').onclick = () => openPanel(panelOpen() && !$('panelNotifs').hidden ? null : 'notifs');
-$('btnSettings').onclick = () => openPanel(panelOpen() && !$('panelSettings').hidden ? null : 'settings');
 $('btnCloseNotifs').onclick = () => openPanel(null);
 $('btnCloseSettings').onclick = () => openPanel(null);
+$('btnCloseWifi').onclick = () => openPanel(null);
+$('btnWifiScan').onclick = () => openWifi(true);
+$('btnControl').onclick = (e) => {
+  // Sans stopPropagation, ce même clic remonte jusqu'à l'écouteur global qui
+  // referme les menus : le centre de contrôle serait refermé à l'instant même
+  // où il s'ouvre.
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  openControlMenu(r.right - 230, r.bottom + 6);
+};
+
+// Un indicateur se clique pour ce qu'il montre : le Wi-Fi bascule le Wi-Fi.
+// Faire ouvrir le centre de contrôle à tous rendait ces icônes indiscernables
+// du menu ⋯. Les indicateurs sans bascule directe (mode avion) y renvoient
+// encore, comme le fond du groupe.
+const RADIO_PAR_ICONE = { netWifi: 'wifi', netBt: 'bluetooth' };
+
+$('net').onclick = async (e) => {
+  e.stopPropagation();
+  const cible = e.target.closest('.net-item');
+  const radio = cible ? RADIO_PAR_ICONE[cible.id] : null;
+
+  if (radio && quick?.net) {
+    const champ = radio === 'wifi' ? 'wifi' : 'bluetooth';
+    const voulu = !quick.net[champ];
+    // L'icône prend tout de suite l'état demandé — sans quoi rien ne distingue
+    // un clic pris en compte d'un clic perdu — et se rectifie au retour.
+    quickBusy = true;
+    quick.net[champ] = voulu;
+    renderNet(quick.net);
+    cible.classList.add('busy');
+    try {
+      await window.aura.setRadio(radio, voulu);
+    } catch (err) {
+      toast(messageErreur(err), true);
+    }
+    cible.classList.remove('busy');
+    quickBusy = false;
+    // La radio met un instant à basculer pour de bon : relire trop tôt
+    // renverrait l'état d'avant.
+    setTimeout(pollQuick, RELECTURE_RADIO);
+    return;
+  }
+
+  if (cible && cible.id === 'netDnd' && typeof quick?.dnd === 'boolean') {
+    quickBusy = true;
+    try { await window.aura.setDnd(!quick.dnd); } catch (err) { toast(messageErreur(err), true); }
+    quickBusy = false;
+    return pollQuick();
+  }
+
+  const r = e.currentTarget.getBoundingClientRect();
+  openControlMenu(r.left, r.bottom + 6);
+};
 $('btnShade').onclick = () => { window.aura.openShade(); toast('Volet ouvert sur le téléphone'); };
 $('btnClearAll').onclick = () => dismissAll();
 $('device').onclick = () => reconnect();
 
-$('btnPin').onclick = async () => {
-  state.settings = await window.aura.saveSettings({ pinned: !state.settings.pinned });
-  $('btnPin').classList.toggle('active', !!state.settings.pinned);
-  toast(state.settings.pinned ? 'Fenêtre épinglée' : 'Fenêtre libérée');
-};
+// L'épinglage vit désormais dans le centre de contrôle (menu ⋯).
 
 // Recherche
 $('query').addEventListener('input', (e) => {
@@ -1436,14 +2084,15 @@ window.aura.onUpdate((etat) => {
   if (!$('panelSettings').hidden) renderSettings();
 });
 
-$('btnMirror').onclick = async () => {
+// Le miroir vit désormais dans le centre de contrôle.
+async function openMirrorFromMenu() {
   try {
     await window.aura.openMirror();
     toast('Écran du téléphone');
   } catch (err) {
-    toast(String(err.message || err), true);
+    toast(messageErreur(err), true);
   }
-};
+}
 
 $('callSee').onclick = () => window.aura.openMirror().catch(() => {});
 $('callTake').onclick = async () => {
@@ -1476,9 +2125,10 @@ window.aura.onShown(() => {
   reconnect();
 });
 
-// Les notifications et l'état de l'appareil se rafraîchissent tant que la
-// fenêtre est visible ; masquée, elle ne réveille pas le téléphone pour rien.
-setInterval(() => { if (!document.hidden) pollNotifications(); }, 20000);
+// Les notifications, l'état de l'appareil et les radios se rafraîchissent tant
+// que la fenêtre est visible ; masquée, elle ne réveille pas le téléphone pour
+// rien.
+setInterval(() => { if (!document.hidden) { pollNotifications(); pollQuick(); } }, 20000);
 setInterval(() => { if (!document.hidden) reconnect(); }, 60000);
 
-boot().catch((err) => toast(String(err.message || err), true));
+boot().catch((err) => toast(messageErreur(err), true));
