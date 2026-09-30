@@ -1,0 +1,62 @@
+# Vérification à chaque poussée.
+#
+# Il n'y avait jusqu'ici qu'un flux de publication : les tests existaient, mais
+# rien ne les exécutait sauf à y penser. Un test qu'on oublie de lancer ne
+# protège de rien.
+#
+# Les trois systèmes, parce que les bugs qui nous intéressent sont précisément
+# ceux qui ne se voient que sur l'un d'eux : fins de ligne CRLF sur Windows,
+# séparateurs de chemins, lenteur des machines de CI. Rien n'est construit ici —
+# c'est le rôle de `release.yml` — donc l'ensemble tient en quelques minutes.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Electron n'est pas nécessaire pour ces tests : ils portent sur des
+      # modules purs et sur l'interface dans jsdom. Sauter son téléchargement
+      # (~100 Mo par machine) fait gagner plus de temps que tout le reste.
+      - name: Installer les dépendances
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Tests
+        run: npm test
+
+  audit:
+    name: Dépendances
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Informatif : une faille annoncée dans un outil de construction ne doit
+      # pas bloquer une correction urgente. Mais elle doit être vue.
+      - name: Failles connues
+        run: npm audit --audit-level=high
+        continue-on-error: true

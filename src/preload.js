@@ -6,19 +6,55 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 
-/// Le chemin d'un fichier déposé sur la fenêtre.
-///
-/// `File.path` n'existe plus depuis Electron 32 : la page n'a plus le droit de
-/// connaître l'arborescence de la machine. Seul le préchargement peut faire la
-/// traduction, et c'est très bien ainsi — l'interface ne manipule qu'un objet
-/// que l'utilisateur a lui-même déposé.
-const cheminDuFichier = (file) => {
+// ── Fichiers déposés ────────────────────────────────────────────────────────
+//
+// `File.path` n'existe plus depuis Electron 32 : la page n'a plus le droit de
+// connaître l'arborescence de la machine. Seul le préchargement peut faire la
+// traduction — et il n'y a aucune raison de la lui rendre.
+//
+// Le chemin reste donc **ici**, derrière un jeton. La page reçoit de quoi
+// afficher le dépôt (un nom, une extension) et de quoi le désigner (le jeton) ;
+// elle n'apprend jamais où le fichier se trouve, et ne peut donc pas nommer un
+// fichier que l'utilisateur n'a pas déposé lui-même.
+//
+// Ce n'était pas le cas jusqu'ici : `bridge:send` acceptait n'importe quel
+// chemin venu de la page. La convention voulait qu'il provienne d'un vrai
+// dépôt ; rien ne l'imposait. L'envoi se fait vers un appareil physique, hors de
+// portée de tout contrôle réseau — c'est exactement le genre de propriété qui
+// doit tenir par construction plutôt que par usage.
+
+const déposés = new Map();
+let prochainJeton = 1;
+
+/// Un dépôt oublié ne garde pas un chemin joignable indéfiniment.
+const JETONS_MAX = 64;
+
+const décrire = (file) => {
+  let chemin = null;
   try {
-    return webUtils.getPathForFile(file) || null;
+    chemin = webUtils.getPathForFile(file) || null;
   } catch (_) {
     return null;
   }
+  if (!chemin) return null;
+
+  const jeton = `d${prochainJeton++}`;
+  déposés.set(jeton, chemin);
+  while (déposés.size > JETONS_MAX) déposés.delete(déposés.keys().next().value);
+
+  return { jeton, nom: chemin.split(/[\\/]/).pop() };
 };
+
+/// Résout les jetons, et les consomme : un dépôt s'envoie une fois.
+const résoudre = (demandes) =>
+  (Array.isArray(demandes) ? demandes : [])
+    .map((d) => {
+      const chemin = d && déposés.get(d.jeton);
+      if (!chemin) return null;
+      déposés.delete(d.jeton);
+      return { path: chemin, action: d.action === 'install' ? 'install' : 'push' };
+    })
+    .filter(Boolean);
 
 contextBridge.exposeInMainWorld('aura', {
   bootstrap: () => invoke('bootstrap'),
@@ -36,8 +72,8 @@ contextBridge.exposeInMainWorld('aura', {
   wifiUnsuggest: (ssid) => invoke('wifi:unsuggest', ssid),
   wifiSuggestions: () => invoke('wifi:suggestions'),
   wifiSettings: () => invoke('wifi:settings'),
-  pathForFile: cheminDuFichier,
-  sendFiles: (demandes) => invoke('bridge:send', demandes),
+  décrireFichier: décrire,
+  sendFiles: (demandes) => invoke('bridge:send', résoudre(demandes)),
   sendUrl: (url) => invoke('bridge:url', url),
   refreshApps: () => invoke('apps:refresh'),
   icon: (pkg) => invoke('icon:get', pkg),
@@ -63,6 +99,7 @@ contextBridge.exposeInMainWorld('aura', {
   quit: () => invoke('window:quit'),
   refreshWallpaper: () => invoke('wallpaper:refresh'),
   openMirror: () => invoke('mirror:open'),
+  acceptFollow: (pkg) => invoke('follow:accept', pkg),
   updateState: () => invoke('update:state'),
   checkUpdate: () => invoke('update:check'),
   downloadUpdate: () => invoke('update:download'),
@@ -86,4 +123,6 @@ contextBridge.exposeInMainWorld('aura', {
   onEngineProgress: (fn) => ipcRenderer.on('engine:progress', (_e, p) => fn(p)),
   onWallpaper: (fn) => ipcRenderer.on('wallpaper:frame', (_e, frame) => fn(frame)),
   onTransfer: (fn) => ipcRenderer.on('transfer', (_e, info) => fn(info)),
+  onHidden: (fn) => ipcRenderer.on('launcher:hidden', () => fn()),
+  onFollow: (fn) => ipcRenderer.on('follow', (_e, info) => fn(info)),
 });

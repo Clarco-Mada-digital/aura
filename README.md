@@ -23,6 +23,7 @@ un grand écran.
 | **Centre de contrôle** | Le bouton ⋯ regroupe écran du téléphone, épingle, réglages, volume média, sonnerie/vibreur/silencieux, et bascules Wi-Fi / Bluetooth / données |
 | **Envoyer au téléphone** | Déposez un fichier sur le widget : il part dans les Téléchargements. Un `.apk` propose l'installation. Une adresse tapée dans la recherche s'ouvre sur le téléphone |
 | **Réseaux Wi-Fi** | ⋯ → « Réseaux Wi-Fi » : ce qui est capté, ce qui est enregistré, rejoindre un réseau — y compris masqué — ou l'oublier |
+| **Applications liées** | « Envoyer un message » depuis le composeur ouvre l'application concernée **dans sa propre fenêtre**. Le choix de carte SIM ou « ouvrir avec » fait apparaître l'écran du téléphone, le temps de répondre |
 | **Raccourci global** | `Ctrl+Alt+Espace` fait apparaître ou disparaître le widget |
 | **Icône de barre** | Le widget vit dans la zone de notification, jamais dans la barre des tâches |
 
@@ -362,6 +363,52 @@ Bluetooth apparié avec lui. Aucun contournement ADB n'existe.
 
 ---
 
+## Applications liées
+
+Une application n'est pas une île. Depuis le composeur, « envoyer un message »
+ouvre l'application de messagerie ; une pièce jointe veut s'ouvrir « avec » ;
+un appel demande par quelle carte SIM partir. Android décide alors seul de
+l'écran où poser la suite, et ses décisions ne vont pas toutes dans notre sens.
+
+**Une activité lancée par une autre hérite normalement de l'écran de celle qui
+l'appelle** : le message s'ouvre bien dans la fenêtre du composeur. Mais si
+l'application visée tourne déjà ailleurs, ou si elle se déclare `singleTask`,
+la tâche existante reprend la main — sur l'écran où elle vit déjà, c'est-à-dire
+la dalle du téléphone.
+
+**Les boîtes du système ne s'affichent jamais sur un écran virtuel.** Choix de
+carte SIM, « ouvrir avec », demande de permission : elles appartiennent à
+l'écran par défaut, quoi qu'on demande.
+
+Dans les deux cas le geste semble ne mener à rien : la fenêtre attendue
+n'apparaît pas, et la validation demandée est sur un écran qu'on ne regarde
+pas. **Rien ne permet de forcer Android à faire autrement** — `am display
+move-stack` a disparu, et aucune commande du shell ne déplace une tâche d'un
+écran à l'autre depuis Android 11. Aura ne peut donc pas l'empêcher ; elle peut
+le voir et y répondre.
+
+Un guet lit toutes les 3 secondes ce qui est au premier plan de chaque écran —
+mais seulement tant qu'une fenêtre Aura est ouverte, car sinon ce qui se passe
+sur le téléphone ne la regarde pas. Ce qu'il en fait dépend de ce qu'il voit :
+
+| Ce qui surgit sur l'écran du téléphone | Ce qu'Aura en fait |
+| :--- | :--- |
+| Une boîte du système (carte SIM, « ouvrir avec », permission) | L'écran du téléphone s'ouvre, le temps d'y répondre |
+| Une application ordinaire | Elle est proposée — ou ouverte aussitôt — dans sa propre fenêtre |
+| L'écran d'accueil, ou une application déjà en fenêtre | Rien |
+
+Les deux comportements se règlent (⋯ → Réglages → « Applications liées »). Par
+défaut, une application est **proposée** plutôt qu'ouverte d'office : elle
+n'apparaît pas toujours sur demande, et une fenêtre qui surgit sans qu'on l'ait
+voulue est plus gênante qu'une alerte qu'on ignore. Une même application n'est
+pas reproposée avant 45 secondes.
+
+L'alerte suit le regard : dans le widget s'il est visible, en alerte du bureau
+sinon — car au moment où le composeur renvoie vers les messages, ce qu'on a
+sous les yeux est la fenêtre du composeur.
+
+---
+
 ## Mise à jour
 
 Aura interroge les publications GitHub vingt secondes après le démarrage —
@@ -436,7 +483,10 @@ d'Electron au lieu de celles du système — puis mourir sans rien afficher.
 ```
 src/main.js      fenêtre, raccourci global, icône de barre, canaux IPC
 src/preload.js   pont entre l'interface et le processus principal
+src/preload-diag.js  pont de la fenêtre de diagnostic, réduit à ses quatre canaux
 src/device.js    adb et scrcpy : appareil, applications, sessions, notifications
+src/activity.js  ce qui est au premier plan, écran par écran (applications liées)
+src/layout.js    taille d'ouverture des fenêtres — arithmétique pure, donc testable
 src/icons.js     extraction des icônes (lecture partielle de l'APK)
 src/arsc.js      lecture de resources.arsc, pour les icônes renommées
 src/store.js     réglages, favoris, historique (JSON)
@@ -452,6 +502,14 @@ test/            filet de tests : parseurs sur sorties réelles, interface jsdom
 (`test/fixtures/` contient des sorties adb et scrcpy figées) et les tests
 d'interface (jsdom pilote la vraie page, événements compris). Chaque bug
 corrigé mérite son test : c'est ce qui l'empêche de revenir.
+
+`npm run verif:electron` est l'autre filet, et il attrape ce que le premier ne
+peut pas voir : `npm test` tourne dans Node et dans jsdom, jamais dans Electron.
+Monter d'une version majeure change pourtant de Chromium, de Node et parfois
+d'API. Ce script exerce tout ce dont Aura dépend réellement — fenêtre
+transparente en bac à sable, pont de préchargement, icône de barre, raccourci
+global, alertes du bureau, capture d'écran — et demande un serveur graphique.
+À rejouer à chaque montée de version.
 
 Les réglages vivent dans `~/.config/aura/config.json`, les icônes dans
 `~/.config/aura/icons/`.
@@ -485,12 +543,32 @@ courant.
 avant de reconstruire l'interface : sans cela, le dock clignoterait chaque
 minute et perdrait la sélection en cours.
 
-**Le sondage d'appels suit l'usage.** Chaque tick lance un processus `adb` et
-fait générer au téléphone un `dumpsys telecom` de ~170 ko. Tant que la fenêtre
-est visible — ou qu'un appel est en cours — il a lieu toutes les 3 s pour ne
-pas rater une sonnerie ; fenêtre masquée et ligne calme, il tombe à 9 s, soit
-les deux tiers de trafic USB et de réveils du téléphone en moins pendant une
-journée de travail où Aura tourne en fond.
+**Le sondage d'appels suit l'usage.** Chaque tick fait générer au téléphone un
+`dumpsys telecom` de ~170 ko. Tant que la fenêtre est visible — ou qu'un appel
+est en cours — il a lieu toutes les 3 s pour ne pas rater une sonnerie ;
+fenêtre masquée et ligne calme, il tombe à 9 s, soit les deux tiers de trafic
+USB et de réveils du téléphone en moins pendant une journée de travail où Aura
+tourne en fond.
+
+**Les sondages passent par un shell maintenu ouvert.** Un `adb shell` jetable
+coûte un processus, une poignée de main avec le serveur adb, puis l'ouverture
+du shell ; mesuré sur l'appareil de référence, 92 ms contre 54 ms par commande
+une fois la session établie. L'écart de latence est modeste, mais ce sont
+surtout **26 processus `adb` par minute** qui disparaissent au repos — le
+sondage d'appels et celui des notifications, qui passaient encore par la forme
+jetable.
+
+**Le widget sait quand il est masqué.** `document.hidden` ne suffit pas : sous
+X11, masquer une fenêtre sans décor ne provoque pas toujours de
+`visibilitychange`, et la page se croyait visible en étant invisible — elle
+réveillait alors le téléphone toutes les vingt secondes pour personne. Le
+processus principal, lui, sait, et le dit (`launcher:shown` / `launcher:hidden`).
+
+**Le fond flouté voyage en JPEG.** La photographie de l'écran traverse l'IPC en
+base64 à chaque apparition du widget. En PNG elle pèse 287 ko ; en JPEG de
+qualité 72, dont la perte ne se voit pas sous un verre dépoli, 29,5 ko — dix
+fois moins. Deux appuis rapprochés sur le raccourci réutilisent la même image
+pendant 2,5 s plutôt que de rephotographier l'écran.
 
 ### Ce qui coûte quand une application est ouverte
 

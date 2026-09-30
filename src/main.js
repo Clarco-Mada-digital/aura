@@ -8,8 +8,11 @@
 const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, Notification, nativeImage, screen, shell, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const url = require('url');
 
 const device = require('./device');
+const activity = require('./activity');
+const layout = require('./layout');
 const { Store } = require('./store');
 const { IconStore, openDexCacheDirs } = require('./icons');
 const windows = require('./windows');
@@ -30,6 +33,26 @@ let appsCache = { serial: null, apps: [], collectedAt: 0 };
 
 const userData = () => app.getPath('userData');
 const appsFile = (serial) => path.join(userData(), `apps-${serial || 'inconnu'}.json`);
+
+const uiDir = () => path.join(__dirname, '..', 'ui');
+
+/// Cette adresse désigne-t-elle un fichier de l'interface d'Aura ?
+///
+/// Comparaison après résolution, et non par préfixe de chaîne : `ui/../..` se
+/// laisse écrire dans une URL, et un simple `startsWith` l'aurait accepté.
+function dansLInterface(adresse) {
+  try {
+    const u = new URL(adresse);
+    if (u.protocol !== 'file:') return false;
+    // `fileURLToPath` plutôt que `pathname` : sous Windows, une adresse
+    // `file:///C:/…` donne un chemin `/C:/…` que `path.resolve` ne comprend pas.
+    const cible = path.resolve(url.fileURLToPath(u));
+    const racine = path.resolve(uiDir());
+    return cible === racine || cible.startsWith(racine + path.sep);
+  } catch (_) {
+    return false;
+  }
+}
 
 // ── Fenêtre ─────────────────────────────────────────────────────────────────
 
@@ -89,6 +112,15 @@ function createWindow() {
     if (!store.get('pinned') && !process.argv.includes('--dev')) win.hide();
   });
 
+  // Le widget passe l'essentiel de son temps masqué, et la page doit le savoir
+  // pour cesser de réveiller le téléphone. `document.hidden` ne suffit pas :
+  // sous X11, `hide()` ne provoque pas toujours de `visibilitychange`, et la
+  // page se croyait visible tout en étant invisible — les sondages tournaient
+  // alors sans personne pour les lire.
+  win.on('hide', () => {
+    if (!win.isDestroyed()) win.webContents.send('launcher:hidden');
+  });
+
   // Les liens externes ne doivent pas remplacer l'interface, et seuls le web
   // ordinaire y a droit : `file://`, `smb://` ou un schéma exotique confié au
   // système ouvrirait bien plus qu'une page.
@@ -98,9 +130,10 @@ function createWindow() {
   });
 
   // L'interface est un fichier local et le reste : rien ne doit pouvoir la
-  // remplacer par une page distante.
+  // remplacer — ni par une page distante, ni par un autre fichier de la
+  // machine. `file://` tout court laissait la seconde porte ouverte.
   win.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('file://')) event.preventDefault();
+    if (!dansLInterface(url)) event.preventDefault();
   });
 
   // Aucune permission web n'a de sens ici (caméra, micro, notifications…).
@@ -147,7 +180,19 @@ function toggleLauncher() {
 // derrière une fenêtre transparente (aucun compositeur ne l'expose de façon
 // portable). On photographie donc l'écran avant d'afficher le lanceur, et le
 // rendu s'en sert comme fond, décalé à la position de la fenêtre et flouté.
-async function captureWallpaper() {
+/// Délai en deçà duquel la dernière photographie fait encore l'affaire.
+///
+/// Le raccourci global se presse souvent deux fois de suite — on l'appelle, on
+/// se ravise, on le rappelle. Photographier l'écran, l'encoder et faire passer
+/// le résultat par l'IPC était jusqu'ici le poste le plus coûteux de
+/// l'apparition du widget ; le refaire trois fois en deux secondes ne montre
+/// rien de plus.
+const FOND_FRAICHEUR = 2500;
+let fondPris = 0;
+
+async function captureWallpaper(force = false) {
+  if (!force && Date.now() - fondPris < FOND_FRAICHEUR) return;
+
   const bounds = win.getBounds();
   const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
   const scale = 0.35; // un fond flouté n'a pas besoin de définition
@@ -163,8 +208,12 @@ async function captureWallpaper() {
 
   const source =
     sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
+  fondPris = Date.now();
   win.webContents.send('wallpaper:frame', {
-    image: source.thumbnail.toDataURL(),
+    // JPEG et non PNG : l'image part floutée derrière un verre dépoli, où la
+    // compression avec perte ne se voit pas — et la chaîne base64 qui traverse
+    // l'IPC passe de quelques centaines de kilo-octets à quelques dizaines.
+    image: `data:image/jpeg;base64,${source.thumbnail.toJPEG(72).toString('base64')}`,
     display: display.bounds,
     scale,
   });
@@ -199,9 +248,12 @@ async function connect() {
   // Le dernier appareil choisi garde la main tant qu'il est là.
   const preferred = store.get('serial');
   const chosen = ready.find((d) => d.serial === preferred) || ready[0];
+  const nouveau = current.serial !== chosen.serial;
   current.serial = chosen.serial;
+  // `Store.set` ignore une écriture qui ne change rien : reposer le même numéro
+  // de série à chaque reconnexion ne touche plus au fichier.
   store.set({ serial: chosen.serial });
-  current.info = await device.deviceInfo(chosen.serial);
+  current.info = await deviceInfo(chosen.serial, nouveau);
 
   // Le magasin d'icônes ne se reconstruit que si l'appareil change : le
   // sondage régulier passe ici toutes les minutes, et réimporter cent
@@ -217,9 +269,36 @@ async function connect() {
     loadApps(chosen.serial);
   }
 
-  startWatching();
-  startCallWatch();
+  // Les guets tournent déjà pour cet appareil : les recréer à chaque
+  // reconnexion — donc toutes les minutes — remettrait à zéro la cadence
+  // adaptative du sondage d'appel.
+  if (nouveau || !watchTimer) {
+    homePkg = null;
+    activity.homePackage(chosen.serial).then((pkg) => { homePkg = pkg; }).catch(() => {});
+    startWatching();
+    startCallWatch();
+    startFollowWatch();
+  }
   return current;
+}
+
+// ── Identité de l'appareil ──────────────────────────────────────────────────
+
+/// Modèle, version d'Android et batterie.
+///
+/// Les deux premiers ne changent jamais pour un appareil donné ; seule la
+/// batterie bouge, et `dumpsys battery` est de loin la plus coûteuse des trois
+/// lectures. La reconnexion passe ici toutes les minutes : on garde le modèle en
+/// mémoire et on n'interroge la batterie qu'à intervalle raisonnable.
+const BATTERIE_FRAICHEUR = 120000;
+let infoCache = { serial: null, info: null, at: 0 };
+
+async function deviceInfo(serial, force = false) {
+  const frais = infoCache.serial === serial && Date.now() - infoCache.at < BATTERIE_FRAICHEUR;
+  if (!force && frais && infoCache.info) return infoCache.info;
+  const info = await device.deviceInfo(serial);
+  infoCache = { serial, info, at: Date.now() };
+  return info;
 }
 
 function loadApps(serial) {
@@ -335,55 +414,13 @@ function broadcastSessions() {
   if (win && !win.isDestroyed()) win.webContents.send('sessions:changed', sessionList());
 }
 
-/// Ramène la fenêtre d'application à une fraction de l'écran, par le chemin
-/// que scrcpy autorise.
+/// Taille d'ouverture d'une fenêtre d'application, pour cet écran-ci.
 ///
-/// Il y a deux façons de faire une petite fenêtre, et elles ne donnent pas du
-/// tout le même résultat :
-///
-///   - **Réduire l'image.** L'écran virtuel garde sa définition et sa densité,
-///     et scrcpy met la vidéo à l'échelle. La mise en page Android est
-///     exactement celle du téléphone, en plus petit. C'est ce qu'on veut, et
-///     c'est le plus net.
-///   - **Réduire l'écran virtuel.** Android relaie une surface plus petite. À
-///     densité constante, il y voit un très petit téléphone et dessine tout en
-///     énorme : une fenêtre de 360 px à 320 ppp ne fait que 180 dp de large.
-///     Il faut donc réduire la densité dans la même proportion, sans quoi le
-///     contenu grossit au lieu de rétrécir.
-///
-/// La première demande `--window-width`/`--window-height`, que scrcpy refuse
-/// quand `--flex-display` est actif — puisque c'est alors la fenêtre qui
-/// commande la définition. On prend donc l'un ou l'autre selon le réglage.
+/// Le calcul lui-même vit dans `layout.js` : il est purement arithmétique, et
+/// c'est justement ce qui le rend vérifiable sans écran ni téléphone. Ici on ne
+/// fait que lui dire de quelle place on dispose.
 function sizing(settings) {
-  const part = Math.min(1, Math.max(0.25, Number(settings.windowScale) || 0.55));
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  const width = settings.width || 1280;
-  const height = settings.height || 800;
-  const tenir = Math.min(1, (sw * part) / width, (sh * part) / height);
-
-  if (!settings.flex) {
-    if (tenir >= 1) return {};
-    // Une seule dimension : scrcpy déduit l'autre et garde le rapport, ce qui
-    // évite les bandes noires.
-    return (sw * part) / width < (sh * part) / height
-      ? { windowWidth: Math.max(280, Math.round(width * tenir)) }
-      : { windowHeight: Math.max(280, Math.round(height * tenir)) };
-  }
-
-  // En dessous de 360 px sur son petit côté, une application Android n'a plus
-  // de mise en page utilisable. Le plancher s'applique au facteur, pas à
-  // chaque dimension : autrement la forme se déformerait aux petites tailles.
-  const plancher = 360 / Math.min(width, height);
-  const facteur = Math.max(plancher, tenir);
-  const pair = (n) => Math.round(n / 2) * 2;
-
-  return {
-    width: pair(width * facteur),
-    height: pair(height * facteur),
-    // La densité suit la définition : même nombre de « dp », donc la même
-    // mise en page, simplement dessinée sur moins de pixels.
-    dpi: Math.max(72, Math.round((settings.dpi || 160) * facteur)),
-  };
+  return layout.sizing(settings, screen.getPrimaryDisplay().workAreaSize);
 }
 
 /// Dernier échec de lancement, gardé pour l'écran de diagnostic.
@@ -408,12 +445,22 @@ function reportFailure(session) {
 }
 
 async function launch(pkg, once = null) {
+  // Le nom de paquet vient de la page. Il ne traverse aucun shell — `spawn`
+  // reçoit un tableau — mais il devient `--start-app=…` et n'a donc aucune
+  // raison de ressembler à autre chose qu'un nom de paquet.
+  device.assertPackage(pkg);
   const app_ = appsCache.apps.find((a) => a.package === pkg) || { package: pkg, name: pkg };
   // Trois couches, de la plus générale à la plus précise : réglages communs,
   // réglages mémorisés pour cette application, puis le choix d'un seul
   // lancement.
   const settings = { ...store.all, ...store.overrideFor(pkg), ...(once || {}) };
   Object.assign(settings, sizing(settings));
+  // Certaines surcouches font transiter l'application par l'écran principal
+  // avant de la poser sur l'écran virtuel. Le guet des applications liées doit
+  // laisser passer ce battement, sans quoi il proposerait d'ouvrir ce qui est en
+  // train de s'ouvrir.
+  followRepit = Date.now() + 8000;
+
   let session;
   try {
     session = await device.launchApp(current.serial, app_, settings, {
@@ -426,6 +473,9 @@ async function launch(pkg, once = null) {
         broadcastSessions();
         reportFailure(s);
       },
+      // Le balayage des serveurs orphelins n'est pas sélectif : il n'a lieu que
+      // si cet échec est le seul en piste (voir `device.purgeStaleServer`).
+      canPurge: () => sessions.size === 0,
     });
   } catch (err) {
     // Échec avant même d'avoir un processus : moteur absent, binaire
@@ -452,6 +502,135 @@ function closeSession(id) {
   sessions.delete(id);
   broadcastSessions();
   return true;
+}
+
+// ── Applications liées ──────────────────────────────────────────────────────
+//
+// Un geste dans une fenêtre Aura mène souvent ailleurs : le composeur propose
+// d'envoyer un message, un appel demande par quelle carte SIM partir. Android
+// pose alors la suite sur l'écran **principal** du téléphone — hors de vue — et
+// aucune commande ne permet de la déplacer (voir `activity.js`).
+//
+// Ce guet regarde donc ce qui surgit là-bas, et y répond : le miroir pour ce qui
+// attend une validation, une vraie fenêtre Aura pour ce qui est une application.
+
+/// Cadence du guet. Il ne tourne que lorsqu'une fenêtre est ouverte : sans
+/// session, ce qui se passe sur le téléphone ne regarde pas Aura.
+const FOLLOW_POLL = 3000;
+
+/// Délai pendant lequel un paquet déjà signalé ne l'est plus. Une application
+/// qu'on vient d'écarter ne doit pas revenir frapper trois secondes plus tard.
+const FOLLOW_REPOS = 45000;
+
+let followTimer = null;
+let followDevant = null;
+let homePkg = null;
+/// Jusqu'à quand ignorer ce qui passe devant. Nos propres lancements font
+/// transiter l'application par l'écran principal sur certaines surcouches : sans
+/// ce répit, Aura se proposerait d'ouvrir ce qu'elle vient d'ouvrir.
+let followRepit = 0;
+const followVus = new Map();
+
+function startFollowWatch() {
+  clearInterval(followTimer);
+  followTimer = setInterval(() => { pollForeground().catch(() => {}); }, FOLLOW_POLL);
+}
+
+/// Les paquets qui ont déjà leur fenêtre Aura.
+function paquetsOuverts() {
+  return new Set([...sessions.values()].map((s) => s.package).filter(Boolean));
+}
+
+async function pollForeground() {
+  if (!current.serial) return;
+
+  // Aucune fenêtre ouverte : rien de ce qui arrive sur le téléphone ne découle
+  // d'Aura, et le guet se rendort — état remis à zéro pour que la première
+  // observation de la prochaine session serve de référence, non d'événement.
+  const vivantes = [...sessions.values()].filter((s) => !s.mirror);
+  if (!vivantes.length) { followDevant = null; return; }
+  if (store.get('followLaunches') === 'off' && !store.get('mirrorOnDialog')) return;
+
+  const ecrans = await activity.foreground(current.serial);
+  if (!ecrans) return;
+
+  const devant = ecrans[activity.ECRAN_PRINCIPAL];
+  const signature = devant ? `${devant.package}/${devant.activity}` : '';
+  if (signature === followDevant) return;
+
+  // La première lecture d'une session établit le point de départ. Réagir
+  // dessus ferait surgir une fenêtre pour l'écran d'accueil au premier
+  // lancement.
+  const amorce = followDevant === null;
+  followDevant = signature;
+  if (amorce || !devant) return;
+  if (Date.now() < followRepit) return;
+  if (homePkg && devant.package === homePkg) return;
+
+  // Une boîte du système attend une réponse, et elle ne s'affichera nulle part
+  // ailleurs que sur la dalle du téléphone : le miroir est la seule façon de la
+  // voir — et donc d'y répondre — depuis l'ordinateur.
+  if (activity.estBoite(devant)) {
+    log.info(`validation attendue sur le téléphone : ${devant.package}/${devant.activity}`);
+    if (store.get('mirrorOnDialog')) {
+      openMirror().catch(() => {});
+      raconteSuivi({ type: 'dialogue', package: devant.package });
+    }
+    return;
+  }
+
+  if (store.get('followLaunches') === 'off') return;
+  // Déjà dans sa propre fenêtre : c'est l'écran principal qui la reflète, pas
+  // une application à ouvrir.
+  if (paquetsOuverts().has(devant.package)) return;
+
+  const vu = followVus.get(devant.package);
+  if (vu && Date.now() - vu < FOLLOW_REPOS) return;
+  followVus.set(devant.package, Date.now());
+
+  const connu = appsCache.apps.find((a) => a.package === devant.package);
+  const nom = connu ? connu.name : devant.package;
+
+  if (store.get('followLaunches') === 'auto') {
+    log.info(`application liée ouverte d'office : ${devant.package}`);
+    try {
+      await launch(devant.package);
+      raconteSuivi({ type: 'ouverte', package: devant.package, nom });
+    } catch (err) {
+      log.warn(`ouverture de ${devant.package} impossible : ${err.message}`);
+    }
+    return;
+  }
+
+  log.info(`application liée proposée : ${devant.package}`);
+  proposeSuivi(devant.package, nom);
+}
+
+function raconteSuivi(message) {
+  if (win && !win.isDestroyed()) win.webContents.send('follow', message);
+}
+
+/// Propose d'ouvrir une application liée, là où l'utilisateur regarde.
+///
+/// Et c'est rarement le widget : au moment où le composeur renvoie vers les
+/// messages, ce qu'il a sous les yeux est la fenêtre du composeur. Une alerte
+/// dans le widget masqué ne serait jamais vue, d'où l'alerte du bureau — qui
+/// porte la même action.
+function proposeSuivi(pkg, nom) {
+  const visible = win && !win.isDestroyed() && win.isVisible();
+  if (visible) return raconteSuivi({ type: 'proposée', package: pkg, nom });
+  if (!Notification.isSupported()) return;
+
+  const n = new Notification({
+    title: `${nom} s'est ouverte sur le téléphone`,
+    body: 'Cliquez pour lui donner sa propre fenêtre.',
+    icon: iconFile(pkg),
+  });
+  n.on('click', () => {
+    followRepit = Date.now() + 8000;
+    launch(pkg).catch((err) => log.warn(`ouverture de ${pkg} impossible : ${err.message}`));
+  });
+  n.show();
 }
 
 // ── Miroir du téléphone ─────────────────────────────────────────────────────
@@ -488,6 +667,7 @@ async function openMirror() {
       broadcastSessions();
       reportFailure(s);
     },
+    canPurge: () => sessions.size === 0,
   });
   session.mirror = true;
   sessions.set(session.id, session);
@@ -648,14 +828,16 @@ function openDiagnostic() {
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // Son propre pont, réduit aux quatre canaux du diagnostic : cette fenêtre
+      // n'a pas à pouvoir envoyer des fichiers ni lancer des applications.
+      preload: path.join(__dirname, 'preload-diag.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
 
-  diagWin.loadFile(path.join(__dirname, '..', 'ui', 'diagnostic.html'));
+  diagWin.loadFile(path.join(uiDir(), 'diagnostic.html'));
   diagWin.on('closed', () => { diagWin = null; });
   return diagWin;
 }
@@ -750,9 +932,24 @@ function registerIpc() {
     if (win && !win.isDestroyed()) win.webContents.send('transfer', message);
   };
 
+  /// Un chemin envoyable : absolu, existant, et un fichier ordinaire.
+  ///
+  /// Le préchargement ne laisse déjà passer que des chemins issus d'un vrai
+  /// dépôt (voir `preload.js`). Ce second filtre ne répète pas le premier : il
+  /// écarte ce qu'un dépôt peut légitimement contenir sans qu'on sache
+  /// l'envoyer — un dossier, un tube nommé, un lien mort.
+  const envoyable = (chemin) => {
+    if (typeof chemin !== 'string' || !path.isAbsolute(chemin)) return false;
+    try {
+      return fs.statSync(chemin).isFile();
+    } catch (_) {
+      return false;
+    }
+  };
+
   ipcMain.handle('bridge:send', async (_e, demandes) => {
     if (!current.serial) throw new Error('aucun appareil connecté');
-    const liste = (Array.isArray(demandes) ? demandes : []).filter((d) => d && d.path);
+    const liste = (Array.isArray(demandes) ? demandes : []).filter((d) => d && envoyable(d.path));
     if (!liste.length) throw new Error('rien à envoyer');
 
     for (const demande of liste) {
@@ -825,6 +1022,15 @@ function registerIpc() {
   ipcMain.handle('app:launch', async (_e, pkg, once) => launch(pkg, once));
 
   ipcMain.handle('mirror:open', async () => openMirror());
+
+  /// La page accepte l'application liée qu'on lui a proposée.
+  ///
+  /// Le paquet ne fait pas confiance à la page pour autant : `launch` le
+  /// contrôle, et le geste serait de toute façon possible par la recherche.
+  ipcMain.handle('follow:accept', async (_e, pkg) => {
+    followRepit = Date.now() + 8000;
+    return launch(pkg);
+  });
 
   ipcMain.handle('update:state', async () => ({ ...update.state(), packaged: app.isPackaged, version: app.getVersion() }));
   ipcMain.handle('update:check', async () => {
@@ -957,7 +1163,8 @@ function registerIpc() {
 
   ipcMain.handle('window:hide', async () => { if (win) win.hide(); });
   ipcMain.handle('window:quit', async () => { app.quit(); });
-  ipcMain.handle('wallpaper:refresh', async () => { await captureWallpaper(); });
+  // Demandé explicitement par la page : elle a une raison de vouloir du neuf.
+  ipcMain.handle('wallpaper:refresh', async () => { await captureWallpaper(true); });
 }
 
 // ── Raccourci global et icône de barre ──────────────────────────────────────
@@ -1062,6 +1269,8 @@ if (!single) {
   app.on('will-quit', () => {
     clearInterval(watchTimer);
     clearInterval(callTimer);
+    clearInterval(followTimer);
+    device.closeShell();
     globalShortcut.unregisterAll();
     // Laisser des scrcpy orphelins laisserait aussi des écrans virtuels ouverts
     // sur le téléphone.
