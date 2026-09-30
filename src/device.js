@@ -14,6 +14,8 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
+const session_ = require('./session');
+
 const OWNER_USER = '0';
 
 /// Guillemets simples POSIX : la seule façon sûre de passer une valeur au shell
@@ -86,8 +88,8 @@ function engineCandidates() {
 /// bibliothèques d'Electron au lieu de celles du système — scrcpy meurt sur
 /// une erreur de symbole, sans rien afficher. On rend donc au fils un
 /// environnement propre.
-function childEnv() {
-  const env = { ...process.env };
+function childEnv(extra = null) {
+  const env = { ...process.env, ...(extra || {}) };
   const appdir = env.APPDIR;
   if (!appdir) return env;
   for (const key of ['LD_LIBRARY_PATH', 'PATH', 'XDG_DATA_DIRS', 'GSETTINGS_SCHEMA_DIR', 'LD_PRELOAD', 'GTK_PATH', 'GDK_PIXBUF_MODULE_FILE', 'PERLLIB', 'PYTHONHOME', 'QT_PLUGIN_PATH']) {
@@ -267,6 +269,19 @@ async function shell(serial, command, opts) {
 /// permet pas.
 function shellOut(serial, command, opts) {
   return pshell(serial, command, opts);
+}
+
+/// La même chose encore, mais qui ne jette jamais.
+///
+/// `pshell` rejette quand le délai passe ou que le câble tombe, là où `adb()`
+/// répondait toujours un verdict. Les appels convertis du second au premier
+/// gardent ainsi leur contrat : un échec est une valeur, pas une exception.
+async function shellTry(serial, command, opts) {
+  try {
+    return await pshell(serial, command, opts);
+  } catch (err) {
+    return { ok: false, code: -1, stdout: '', stderr: err.message };
+  }
 }
 
 async function startServer() {
@@ -557,9 +572,9 @@ async function openUrl(serial, url) {
   const adresse = String(url || '').trim();
   if (!SCHEMES.test(adresse)) throw new Error('adresse non prise en charge');
   if (/[\s]/.test(adresse)) throw new Error('adresse invalide');
-  const out = await adb(
+  const out = await shellTry(
     serial,
-    ['shell', `am start --user ${OWNER_USER} -a android.intent.action.VIEW -d ${quote(adresse)}`],
+    `am start --user ${OWNER_USER} -a android.intent.action.VIEW -d ${quote(adresse)}`,
     { timeout: 15000 }
   );
   const texte = out.stdout + out.stderr;
@@ -752,9 +767,9 @@ async function wifiUnsuggest(serial, ssid) {
 /// portail captif, mot de passe à changer. Avec le miroir ouvert, le clavier de
 /// l'ordinateur tape directement dans le champ du téléphone.
 async function openWifiSettings(serial) {
-  const out = await adb(
+  const out = await shellTry(
     serial,
-    ['shell', `am start --user ${OWNER_USER} -a android.settings.WIFI_SETTINGS`],
+    `am start --user ${OWNER_USER} -a android.settings.WIFI_SETTINGS`,
     { timeout: 10000 }
   );
   return out.ok && !/Error|Exception/.test(out.stdout + out.stderr);
@@ -953,16 +968,24 @@ function tail(log, count = 12) {
 
 let nextSessionId = 1;
 
-/// Tue le serveur scrcpy resté sur l'appareil après un lancement avorté.
+/// Tue les serveurs scrcpy restés sur l'appareil après un lancement avorté.
 ///
 /// Quand un client meurt sans prévenir (watchdog, plantage), le processus
 /// serveur côté téléphone peut survivre et bloquer les lancements suivants :
 /// scrcpy pousse son serveur, affiche « Device: … », puis attend indéfiniment
 /// une fenêtre qui ne viendra jamais. Purge best-effort : si l'appareil est
 /// déjà parti, il n'y a plus rien à nettoyer.
+///
+/// Le balayage est **collectif** : rien dans la table des processus du téléphone
+/// ne relie un serveur au client qui l'a poussé — l'identifiant de session
+/// (`scid`) est tiré au hasard par scrcpy et n'est pas exposé. C'est pourquoi
+/// l'appelant décide : purger pendant qu'une autre fenêtre est ouverte
+/// refermerait celle qui marchait, et un échec de lancement emportait jusqu'ici
+/// toutes les fenêtres vivantes — y compris celles d'une autre application qui
+/// se sert du même téléphone.
 function purgeStaleServer(serial) {
   if (!serial) return;
-  adb(serial, ['shell', 'pkill -f com.genymobile.scrcpy'], { timeout: 5000 }).catch(() => {});
+  shellTry(serial, 'pkill -f com.genymobile.scrcpy', { timeout: 5000 }).catch(() => {});
 }
 
 // Chaque application est un processus scrcpy autonome, sur son propre écran
@@ -982,9 +1005,16 @@ function launchApp(serial, app, settings, hooks = {}) {
     }
 
     const id = nextSessionId++;
+    // Sous Wayland, laisser SDL choisir seul donne une fenêtre Wayland native,
+    // qu'aucun outil ne sait plus lever ni réduire. Passer par XWayland rend les
+    // vignettes de session opérantes (voir `session.js`).
+    const pilote = session_.videoDriver({ xwayland: settings.xwayland !== false });
     let child;
     try {
-      child = spawn(engine.path, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() });
+      child = spawn(engine.path, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: childEnv(pilote ? { SDL_VIDEODRIVER: pilote } : null),
+      });
     } catch (err) {
       return reject(err);
     }
@@ -1018,9 +1048,20 @@ function launchApp(serial, app, settings, hooks = {}) {
       fail("aucune fenêtre au bout de 45 secondes — le lancement a été abandonné.");
       // Le client meurt, mais le serveur côté téléphone peut lui survivre et
       // faire échouer le lancement suivant en silence. On le purge.
-      purgeStaleServer(serial);
+      purge();
       try { child.kill('SIGTERM'); } catch (_) {}
     }, START_TIMEOUT);
+
+    // Le balayage des serveurs orphelins n'est pas sélectif (voir
+    // `purgeStaleServer`) : il n'a lieu que si l'appelant confirme qu'aucune
+    // autre fenêtre ne serait emportée au passage.
+    const purge = () => {
+      if (hooks.canPurge && !hooks.canPurge()) {
+        session.log.push('[aura] serveur orphelin non purgé : d\'autres fenêtres sont ouvertes.');
+        return;
+      }
+      purgeStaleServer(serial);
+    };
 
     let reported = false;
     const fail = (message) => {
@@ -1092,7 +1133,7 @@ function launchApp(serial, app, settings, hooks = {}) {
       // retenue en tampon est justement arrivée à la fermeture.
       if (session.presumed && code && Date.now() - session.startedAt < START_TIMEOUT) {
         fail(`scrcpy s'est arrêté (code ${code}) sans ouvrir de fenêtre.`);
-        purgeStaleServer(serial);
+        purge();
         if (hooks.onUpdate) hooks.onUpdate(session);
         return;
       }
@@ -1135,12 +1176,15 @@ function mirror(serial, settings, hooks = {}) {
 /// Le numéro, lui, est masqué par Android dans cette sortie. C'est la
 /// notification de l'appel qui donne le nom de l'appelant.
 async function callState(serial) {
-  const out = await adb(
+  // Par le shell maintenu ouvert : ce sondage passe toutes les trois secondes
+  // tant que le widget est visible, et un `adb shell` jetable coûterait ici
+  // dix fois le prix de la commande elle-même.
+  const out = await shellOut(
     serial,
-    ['shell', `dumpsys telecom | awk '/^[[:space:]]*\\[Call id=/{print}'`],
+    `dumpsys telecom | awk '/^[[:space:]]*\\[Call id=/{print}'`,
     { timeout: 8000 }
-  );
-  if (!out.ok) return null;
+  ).catch(() => null);
+  if (!out || !out.ok) return null;
 
   const appels = [];
   for (const line of out.stdout.split('\n')) {
@@ -1167,13 +1211,13 @@ async function callState(serial) {
 /// kits mains-libres, celle qu'Android accepte encore d'une source externe sur
 /// les versions récentes.
 async function answerCall(serial) {
-  const out = await adb(serial, ['shell', 'input keyevent 79'], { timeout: 8000 });
+  const out = await shellTry(serial, 'input keyevent 79', { timeout: 8000 });
   return out.ok;
 }
 
 /// Raccrocher, ou refuser un appel qui sonne.
 async function hangUpCall(serial) {
-  const out = await adb(serial, ['shell', 'input keyevent 6'], { timeout: 8000 });
+  const out = await shellTry(serial, 'input keyevent 6', { timeout: 8000 });
   return out.ok;
 }
 
@@ -1183,12 +1227,15 @@ async function hangUpCall(serial) {
 /// `com.google.android.dialer` chez l'autre. Android sait répondre lui-même à
 /// la question : on la lui pose.
 async function defaultDialer(serial) {
-  const out = await adb(
+  // `--user ${OWNER_USER}` : voir la règle 1 en tête de fichier. Sans elle, un
+  // téléphone dont un profil secondaire est au premier plan — Secure Folder,
+  // Dual Messenger — répond pour ce profil-là.
+  const out = await shellTry(
     serial,
-    ['shell', 'cmd package resolve-activity --brief -a android.intent.action.DIAL'],
+    `cmd package resolve-activity --brief --user ${OWNER_USER} -a android.intent.action.DIAL`,
     { timeout: 10000 }
   );
-  const ligne = out.stdout.trim().split('\n').pop() || '';
+  const ligne = out.stdout.trim().split('\n').pop().trim() || '';
   const pkg = ligne.split('/')[0].trim();
   return PACKAGE.test(pkg) ? pkg : null;
 }
@@ -1202,9 +1249,9 @@ async function dial(serial, number, displayId = null) {
   const propre = String(number).replace(/[^0-9+*#,;]/g, '');
   if (!propre) throw new Error('numéro vide');
   const cible = displayId === null ? '' : `--display ${Number(displayId)} `;
-  const out = await adb(
+  const out = await shellTry(
     serial,
-    ['shell', `am start --user ${OWNER_USER} ${cible}-a android.intent.action.DIAL -d ${quote(`tel:${propre}`)}`],
+    `am start --user ${OWNER_USER} ${cible}-a android.intent.action.DIAL -d ${quote(`tel:${propre}`)}`,
     { timeout: 10000 }
   );
   return { ok: out.ok && !/Error|Exception/.test(out.stdout + out.stderr), number: propre };
@@ -1258,7 +1305,7 @@ function parseNotifications(dump) {
 // en deux cents octets et répond en 0,05 s. Le sondage régulier passe par ici,
 // et ne réclame le dump que lorsque l'ensemble a bougé.
 async function listNotificationKeys(serial) {
-  const out = await adb(serial, ['shell', 'cmd notification list'], { timeout: 8000 });
+  const out = await shellTry(serial, 'cmd notification list', { timeout: 8000 });
   if (!out.ok) return [];
   return out.stdout
     .split('\n')
@@ -1280,7 +1327,7 @@ async function listNotifications(serial) {
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 async function dismissNotification(serial, key) {
-  const out = await adb(serial, ['shell', `cmd notification snooze --for ${SNOOZE_MS} ${quote(key)}`], { timeout: 10000 });
+  const out = await shellTry(serial, `cmd notification snooze --for ${SNOOZE_MS} ${quote(key)}`, { timeout: 10000 });
   return out.ok && /snoozing/i.test(out.stdout + out.stderr);
 }
 
@@ -1400,6 +1447,7 @@ module.exports = {
   adb,
   shell,
   shellOut,
+  shellTry,
   pshell,
   closeShell,
 };

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data: file:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Aura — Bureau</title>
+    <link rel="stylesheet" href="desktop.css" />
+  </head>
+  <body>
+    <!-- Le fond. Une image choisie, ou l'un des dégradés livrés. -->
+    <div class="fond" id="fond"></div>
+
+    <!-- La scène : widgets et icônes y sont posés en coordonnées libres, et
+         les fenêtres logées occupent l'espace au-dessus de la barre. Rien ici
+         ne peut passer par-dessus une application Android : sa surface est
+         dessinée par le serveur X, au-dessus de tout le HTML. -->
+    <main class="scene" id="scene">
+      <div class="widgets" id="widgets"></div>
+      <div class="icones" id="icones"></div>
+      <div class="cadres" id="cadres"></div>
+
+      <div class="vide" id="vide" hidden>
+        <strong>Aucun téléphone connecté</strong>
+        <span>Branchez-le et activez le débogage USB.</span>
+      </div>
+    </main>
+
+    <!-- Barre des tâches -->
+    <footer class="barre" id="barre">
+      <button class="demarrer" id="btnLanceur" title="Applications">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.2"/><circle cx="12" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="6" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="12" cy="18" r="2.2"/><circle cx="18" cy="18" r="2.2"/></svg>
+      </button>
+
+      <div class="taches" id="taches"></div>
+
+      <div class="plateau">
+        <span class="etat" id="etatAppareil"></span>
+        <span class="heure" id="heureBarre"></span>
+        <button class="icone-btn" id="btnFond" title="Fond d’écran">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="8.5" cy="10" r="1.6"/><path d="M4 17l5-4.5 4 3.5 3-2.5 4 3.5"/></svg>
+        </button>
+        <button class="icone-btn" id="btnQuitter" title="Quitter le bureau">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19H10"/><path d="M15 8l4 4-4 4"/><path d="M19 12h-9"/></svg>
+        </button>
+      </div>
+    </footer>
+
+    <!-- Lanceur : la grille de toutes les applications, avec recherche -->
+    <div class="lanceur" id="lanceur" hidden>
+      <div class="lanceur-boite">
+        <input id="recherche" type="search" placeholder="Rechercher une application…" autocomplete="off" spellcheck="false" />
+        <div class="grille" id="grille"></div>
+      </div>
+    </div>
+
+    <!-- Choix du fond -->
+    <div class="voile" id="voileFond" hidden>
+      <div class="panneau">
+        <h2>Fond d’écran</h2>
+        <div class="fonds" id="fonds"></div>
+        <div class="panneau-actions">
+          <button class="ghost" id="fondFichier">Choisir une image…</button>
+          <button class="ghost" id="fondFermer">Fermer</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="desktop.js"></script>
+  </body>
+</html>

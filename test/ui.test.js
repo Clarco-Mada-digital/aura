@@ -68,7 +68,7 @@ async function makeApp(t, overrides = {}) {
   };
   // Les canaux d'événements : on retient les abonnés pour les déclencher.
   aura._subscribers = {};
-  for (const channel of ['onNotifications', 'onSessions', 'onUpdate', 'onCall', 'onFailure', 'onShown', 'onEngineProgress', 'onWallpaper', 'onTransfer']) {
+  for (const channel of ['onNotifications', 'onSessions', 'onUpdate', 'onCall', 'onFailure', 'onShown', 'onEngineProgress', 'onWallpaper', 'onTransfer', 'onHidden', 'onFollow']) {
     aura[channel] = (fn) => { (aura._subscribers[channel] ||= []).push(fn); };
   }
   window.aura = aura;
@@ -226,6 +226,90 @@ test('le centre de contrôle contient épinglage, miroir et réglages', async (t
   assert.ok(labels.includes('Écran du téléphone'));
   assert.ok(labels.includes('Épingler la fenêtre'));
   assert.ok(labels.includes('Réglages'));
+});
+
+// ── Applications liées ──────────────────────────────────────────────────────
+
+/// Déclenche un événement du processus principal sur la page.
+const émettre = (aura, channel, ...args) =>
+  (aura._subscribers[channel] || []).forEach((fn) => fn(...args));
+
+test('une application liée proposée donne une alerte cliquable qui l’ouvre', async (t) => {
+  const { window, aura, calls } = await makeApp(t, {
+    acceptFollow: (pkg) => { calls.push(['acceptFollow', pkg]); return Promise.resolve({}); },
+  });
+  const doc = window.document;
+
+  émettre(aura, 'onFollow', { type: 'proposée', package: 'com.google.android.apps.messaging', nom: 'Messages' });
+  await waitFor(window, () => !doc.getElementById('toast').hidden, 'alerte affichée');
+
+  const toast = doc.getElementById('toast');
+  assert.match(toast.textContent, /Messages/);
+  assert.ok(toast.classList.contains('clickable'), 'l’alerte doit se cliquer');
+
+  click(window, toast);
+  await waitFor(
+    window,
+    () => calls.some(([n, p]) => n === 'acceptFollow' && p === 'com.google.android.apps.messaging'),
+    'ouverture demandée'
+  );
+});
+
+test('une validation attendue sur le téléphone est annoncée, sans rien à cliquer', async (t) => {
+  const { window, aura } = await makeApp(t);
+  const doc = window.document;
+
+  // Le miroir s'ouvre depuis le processus principal : la page n'a qu'à dire
+  // pourquoi l'écran du téléphone vient d'apparaître.
+  émettre(aura, 'onFollow', { type: 'dialogue', package: 'com.android.server.telecom' });
+  await waitFor(window, () => !doc.getElementById('toast').hidden, 'alerte affichée');
+
+  assert.match(doc.getElementById('toast').textContent, /validation/i);
+  assert.strictEqual(doc.getElementById('toast').classList.contains('clickable'), false);
+});
+
+test('les réglages exposent le sort des applications liées', async (t) => {
+  const { window } = await makeApp(t, {
+    updateState: () => Promise.resolve({ statut: 'à jour', packaged: false, version: 'test' }),
+  });
+  const doc = window.document;
+
+  doc.dispatchEvent(new window.KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true }));
+  await waitFor(window, () => !doc.getElementById('panelSettings').hidden, 'ouverture des réglages');
+
+  const labels = [...doc.querySelectorAll('#settingsBody .lab')].map((el) => el.textContent);
+  assert.ok(labels.some((l) => /ouvre ailleurs/i.test(l)), 'le choix du suivi est réglable');
+  assert.ok(labels.some((l) => /validations/i.test(l)), 'le miroir sur boîte système est réglable');
+});
+
+// ── Fichiers déposés ────────────────────────────────────────────────────────
+
+test('un dépôt n’envoie que des jetons, jamais un chemin', async (t) => {
+  const envois = [];
+  const { window, aura } = await makeApp(t, {
+    sendFiles: (demandes) => { envois.push(demandes); return Promise.resolve({ count: demandes.length }); },
+  });
+
+  // Le préchargement rend un descripteur sans chemin : c'est toute la garantie.
+  // La page ne peut nommer que ce qu'elle a reçu d'un vrai dépôt.
+  aura.décrireFichier = (file) => ({ jeton: `d${file.nom}`, nom: file.nom });
+
+  const dt = {
+    types: ['Files'],
+    files: [{ nom: 'notes.txt' }],
+    dropEffect: '',
+  };
+  const évén = new window.Event('drop', { bubbles: true, cancelable: true });
+  évén.dataTransfer = dt;
+  window.document.dispatchEvent(évén);
+
+  await waitFor(window, () => envois.length === 1, 'envoi déclenché');
+  // Comparaison champ par champ : les objets viennent du contexte jsdom, et
+  // `deepStrictEqual` compare aussi les prototypes.
+  assert.strictEqual(envois[0].length, 1);
+  assert.strictEqual(envois[0][0].jeton, 'dnotes.txt');
+  assert.strictEqual(envois[0][0].action, 'push');
+  assert.deepEqual(Object.keys(envois[0][0]).sort(), ['action', 'jeton'], 'aucun chemin ne traverse la page');
 });
 
 // ── Indicateurs de connectivité ─────────────────────────────────────────────

@@ -23,6 +23,8 @@ un grand écran.
 | **Centre de contrôle** | Le bouton ⋯ regroupe écran du téléphone, épingle, réglages, volume média, sonnerie/vibreur/silencieux, et bascules Wi-Fi / Bluetooth / données |
 | **Envoyer au téléphone** | Déposez un fichier sur le widget : il part dans les Téléchargements. Un `.apk` propose l'installation. Une adresse tapée dans la recherche s'ouvre sur le téléphone |
 | **Réseaux Wi-Fi** | ⋯ → « Réseaux Wi-Fi » : ce qui est capté, ce qui est enregistré, rejoindre un réseau — y compris masqué — ou l'oublier |
+| **Applications liées** | « Envoyer un message » depuis le composeur ouvre l'application concernée **dans sa propre fenêtre**. Le choix de carte SIM ou « ouvrir avec » fait apparaître l'écran du téléphone, le temps de répondre |
+| **Mode bureau** | Un plein écran où le téléphone devient la machine : fond d'écran, widgets, icônes, et les applications Android **logées dans le bureau** comme les fenêtres d'un système d'exploitation |
 | **Raccourci global** | `Ctrl+Alt+Espace` fait apparaître ou disparaître le widget |
 | **Icône de barre** | Le widget vit dans la zone de notification, jamais dans la barre des tâches |
 
@@ -60,8 +62,9 @@ Aura **ne décode pas la vidéo et ne compose pas de fenêtres**. Il délègue t
 téléphone, décodage matériel sur le PC (VAAPI, D3D11VA, VideoToolbox), affichage
 GPU. Trois conséquences pratiques :
 
-**Aucune fenêtre n'est reparentée.** Chaque application est un processus isolé
-dont la fenêtre appartient au gestionnaire de fenêtres du système : accroche aux
+**Aucune fenêtre n'est reparentée** — sauf en mode bureau, qui l'assume et en
+paie le prix. Partout ailleurs, chaque application est un processus isolé dont
+la fenêtre appartient au gestionnaire de fenêtres du système : accroche aux
 bords, Alt+Tab et multi-écran fonctionnent, et une application qui tombe
 n'emporte ni les autres, ni le widget.
 
@@ -362,6 +365,166 @@ Bluetooth apparié avec lui. Aucun contournement ADB n'existe.
 
 ---
 
+## Le mode bureau
+
+Le widget est un lanceur posé sur *votre* bureau. Le mode bureau est l'inverse :
+un plein écran où **le téléphone devient la machine**. Fond d'écran, widgets
+posés où l'on veut, icônes d'applications, barre des tâches — et les
+applications Android logées dedans, avec barre de titre, déplacement,
+redimensionnement et réduction.
+
+Il s'ouvre depuis le menu ⋯ (« Mode bureau »), depuis l'icône de barre, ou au
+lancement avec `--desktop`. Le widget continue de vivre sa vie : les deux modes
+cohabitent, et c'est le même téléphone, le même inventaire, les mêmes sessions.
+
+### Ce que « loger une fenêtre » veut dire
+
+Partout ailleurs, Aura **ne reparente jamais** les fenêtres de scrcpy : chacune
+appartient au gestionnaire de fenêtres du système, d'où Alt+Tab, l'accroche aux
+bords et le multi-écran qui fonctionnent. Le mode bureau fait l'inverse, et il
+faut savoir ce que cela coûte.
+
+Retirer une fenêtre à son gestionnaire tient en trois gestes, et l'ordre compte
+— vérifié sur Cinnamon/Muffin, où reparenter directement ne tient pas une
+seconde :
+
+1. **La replier.** Le gestionnaire voit l'`UnmapNotify`, la considère retirée,
+   détruit son cadre et la rend à la racine.
+2. **Attendre qu'il ait fini.** C'est un aller-retour. Agir avant, c'est courir
+   contre lui — et perdre, puisqu'il agit en dernier.
+3. **La déclarer `override-redirect`.** Il cesse alors de la considérer : plus
+   de cadre, plus de placement imposé, plus de reprise au prochain `map`. C'est
+   ce que font les menus déroulants, pour la même raison.
+
+Une fenêtre logée sort donc de la juridiction du gestionnaire : plus de
+décoration, plus d'Alt+Tab, plus de barre des tâches système. Tout ce qu'il
+faisait pour elle, le bureau le refait lui-même. C'est un gestionnaire de
+fenêtres en miniature, et c'est le prix d'un bureau qui **contient** vraiment
+ses fenêtres.
+
+### La contrainte qui dessine tout
+
+**Une fenêtre X11 enfant est peinte par le serveur X, au-dessus de tout ce que
+Chromium dessine.** Aucun élément HTML ne peut passer par-dessus une application
+logée.
+
+D'où la forme des fenêtres : la barre de titre n'est pas *sur* l'application
+mais *au-dessus* d'elle, dans la bande qu'elle ne couvre pas ; la poignée de
+redimensionnement est *sous* son coin. Le cadre est un contour, pas un
+conteneur. Qui touche à `ui/desktop.js` doit avoir cela en tête.
+
+### Les widgets
+
+Horloge et date, état de l'appareil (batterie, Android, radios), notifications
+en direct — cliquables, elles ouvrent l'application qui les a posées. Tous se
+déplacent à la souris, et leur position est retenue.
+
+Les icônes d'applications se posent sur le bureau par un clic droit dans le
+lanceur, et se retirent par un clic droit dessus.
+
+**Les widgets Android — ceux de l'écran d'accueil du téléphone — ne sont pas
+accessibles.** `AppWidgetHost` est une API réservée aux lanceurs tournant *sur*
+l'appareil, et aucune commande ADB ne l'expose. L'équivalent qu'offre Aura est
+une **vignette** : une application épinglée sans barre de titre, réduite, posée
+sur le bureau — vivante et interactive, là où un widget Android ne serait
+qu'affiché.
+
+### Là où c'est impossible
+
+Le reparentage demande X11 — XWayland compris. Sans lui (Wayland pur,
+`python3-xlib` absent), le bureau ne s'effondre pas : fond d'écran, widgets,
+icônes et lanceur fonctionnent, et les applications s'ouvrent en fenêtres
+flottantes comme d'habitude. L'interface le dit au lieu d'afficher un cadre vide.
+
+---
+
+## X11, Wayland et XWayland
+
+Aura pilote les fenêtres des autres — celles de scrcpy — et c'est le protocole
+graphique qui décide si c'est possible.
+
+Sous **X11**, `wmctrl` lève une fenêtre et `xdotool` la réduit : cliquer sur une
+vignette de session ramène la fenêtre correspondante. Sous **Wayland**, aucun
+protocole standard ne permet à une application d'en lever une autre. Ce n'est
+pas un oubli mais un choix de conception : une fenêtre ne peut pas s'imposer
+devant les autres.
+
+Entre les deux vit **XWayland**, le serveur X de compatibilité que toute session
+Wayland fait tourner. Une fenêtre qui passe par lui reste une fenêtre X11 :
+`wmctrl` la voit, et tout le pilotage fonctionne à nouveau.
+
+C'est la porte de sortie, parce que scrcpy sait emprunter l'une ou l'autre — son
+SDL embarque les deux pilotes et obéit à `SDL_VIDEODRIVER`. Laissé libre, SDL
+2.0.22 et suivants choisissent Wayland, et les vignettes cessent alors de
+fonctionner **sans rien dire**. Aura impose donc `x11` sous Wayland.
+
+Le compromis est réel et se règle (*Fenêtres pilotables sous Wayland*) :
+
+| | Fenêtres pilotables | Netteté |
+| :--- | :--- | :--- |
+| XWayland (défaut) | oui | légèrement dégradée aux échelles fractionnaires (125 %, 150 %) |
+| Wayland natif | non | exacte à toutes les échelles |
+
+Le défaut privilégie la fonction : une vignette qui ne répond pas est plus
+déroutante qu'un pixel légèrement adouci. `AURA_SDL_VIDEODRIVER` tranche sans
+passer par l'interface.
+
+**Le fond flouté est désactivé sous Wayland.** Photographier l'écran y passe par
+`xdg-desktop-portal`, qui demande à l'utilisateur de désigner un écran — à
+chaque prise. Le fond se prenant à chaque apparition du widget, ce serait une
+boîte de dialogue par appui sur le raccourci.
+
+Le diagnostic (⋯ → Réglages → Diagnostic) indique la session détectée et, le cas
+échéant, que les fenêtres transitent par XWayland.
+
+---
+
+## Applications liées
+
+Une application n'est pas une île. Depuis le composeur, « envoyer un message »
+ouvre l'application de messagerie ; une pièce jointe veut s'ouvrir « avec » ;
+un appel demande par quelle carte SIM partir. Android décide alors seul de
+l'écran où poser la suite, et ses décisions ne vont pas toutes dans notre sens.
+
+**Une activité lancée par une autre hérite normalement de l'écran de celle qui
+l'appelle** : le message s'ouvre bien dans la fenêtre du composeur. Mais si
+l'application visée tourne déjà ailleurs, ou si elle se déclare `singleTask`,
+la tâche existante reprend la main — sur l'écran où elle vit déjà, c'est-à-dire
+la dalle du téléphone.
+
+**Les boîtes du système ne s'affichent jamais sur un écran virtuel.** Choix de
+carte SIM, « ouvrir avec », demande de permission : elles appartiennent à
+l'écran par défaut, quoi qu'on demande.
+
+Dans les deux cas le geste semble ne mener à rien : la fenêtre attendue
+n'apparaît pas, et la validation demandée est sur un écran qu'on ne regarde
+pas. **Rien ne permet de forcer Android à faire autrement** — `am display
+move-stack` a disparu, et aucune commande du shell ne déplace une tâche d'un
+écran à l'autre depuis Android 11. Aura ne peut donc pas l'empêcher ; elle peut
+le voir et y répondre.
+
+Un guet lit toutes les 3 secondes ce qui est au premier plan de chaque écran —
+mais seulement tant qu'une fenêtre Aura est ouverte, car sinon ce qui se passe
+sur le téléphone ne la regarde pas. Ce qu'il en fait dépend de ce qu'il voit :
+
+| Ce qui surgit sur l'écran du téléphone | Ce qu'Aura en fait |
+| :--- | :--- |
+| Une boîte du système (carte SIM, « ouvrir avec », permission) | L'écran du téléphone s'ouvre, le temps d'y répondre |
+| Une application ordinaire | Elle est proposée — ou ouverte aussitôt — dans sa propre fenêtre |
+| L'écran d'accueil, ou une application déjà en fenêtre | Rien |
+
+Les deux comportements se règlent (⋯ → Réglages → « Applications liées »). Par
+défaut, une application est **proposée** plutôt qu'ouverte d'office : elle
+n'apparaît pas toujours sur demande, et une fenêtre qui surgit sans qu'on l'ait
+voulue est plus gênante qu'une alerte qu'on ignore. Une même application n'est
+pas reproposée avant 45 secondes.
+
+L'alerte suit le regard : dans le widget s'il est visible, en alerte du bureau
+sinon — car au moment où le composeur renvoie vers les messages, ce qu'on a
+sous les yeux est la fenêtre du composeur.
+
+---
+
 ## Mise à jour
 
 Aura interroge les publications GitHub vingt secondes après le démarrage —
@@ -436,15 +599,21 @@ d'Electron au lieu de celles du système — puis mourir sans rien afficher.
 ```
 src/main.js      fenêtre, raccourci global, icône de barre, canaux IPC
 src/preload.js   pont entre l'interface et le processus principal
+src/preload-diag.js  pont de la fenêtre de diagnostic, réduit à ses quatre canaux
 src/device.js    adb et scrcpy : appareil, applications, sessions, notifications
+src/activity.js  ce qui est au premier plan, écran par écran (applications liées)
+src/layout.js    taille d'ouverture des fenêtres — arithmétique pure, donc testable
 src/icons.js     extraction des icônes (lecture partielle de l'APK)
 src/arsc.js      lecture de resources.arsc, pour les icônes renommées
 src/store.js     réglages, favoris, historique (JSON)
 src/install.js   téléchargement et vérification de scrcpy
-src/windows.js   lever et réduire les fenêtres d'application (X11)
+src/windows.js   lever et réduire les fenêtres d'application (X11 / XWayland)
+src/session.js   X11 ou Wayland, et ce que chacun permet
+src/desktop.js   mode bureau : fenêtre, mise en page, fenêtres logées
+src/embed.js     reparentage X11 — retirer une fenêtre à son gestionnaire
 src/log.js       journal de bord, pour les échecs qu'on ne voit pas passer
 src/update.js    vérification et installation des nouvelles versions
-ui/              interface : index.html, style.css, app.js
+ui/              interfaces : le widget (index.html) et le bureau (desktop.html)
 test/            filet de tests : parseurs sur sorties réelles, interface jsdom
 ```
 
@@ -452,6 +621,14 @@ test/            filet de tests : parseurs sur sorties réelles, interface jsdom
 (`test/fixtures/` contient des sorties adb et scrcpy figées) et les tests
 d'interface (jsdom pilote la vraie page, événements compris). Chaque bug
 corrigé mérite son test : c'est ce qui l'empêche de revenir.
+
+`npm run verif:electron` est l'autre filet, et il attrape ce que le premier ne
+peut pas voir : `npm test` tourne dans Node et dans jsdom, jamais dans Electron.
+Monter d'une version majeure change pourtant de Chromium, de Node et parfois
+d'API. Ce script exerce tout ce dont Aura dépend réellement — fenêtre
+transparente en bac à sable, pont de préchargement, icône de barre, raccourci
+global, alertes du bureau, capture d'écran — et demande un serveur graphique.
+À rejouer à chaque montée de version.
 
 Les réglages vivent dans `~/.config/aura/config.json`, les icônes dans
 `~/.config/aura/icons/`.
@@ -485,12 +662,32 @@ courant.
 avant de reconstruire l'interface : sans cela, le dock clignoterait chaque
 minute et perdrait la sélection en cours.
 
-**Le sondage d'appels suit l'usage.** Chaque tick lance un processus `adb` et
-fait générer au téléphone un `dumpsys telecom` de ~170 ko. Tant que la fenêtre
-est visible — ou qu'un appel est en cours — il a lieu toutes les 3 s pour ne
-pas rater une sonnerie ; fenêtre masquée et ligne calme, il tombe à 9 s, soit
-les deux tiers de trafic USB et de réveils du téléphone en moins pendant une
-journée de travail où Aura tourne en fond.
+**Le sondage d'appels suit l'usage.** Chaque tick fait générer au téléphone un
+`dumpsys telecom` de ~170 ko. Tant que la fenêtre est visible — ou qu'un appel
+est en cours — il a lieu toutes les 3 s pour ne pas rater une sonnerie ;
+fenêtre masquée et ligne calme, il tombe à 9 s, soit les deux tiers de trafic
+USB et de réveils du téléphone en moins pendant une journée de travail où Aura
+tourne en fond.
+
+**Les sondages passent par un shell maintenu ouvert.** Un `adb shell` jetable
+coûte un processus, une poignée de main avec le serveur adb, puis l'ouverture
+du shell ; mesuré sur l'appareil de référence, 92 ms contre 54 ms par commande
+une fois la session établie. L'écart de latence est modeste, mais ce sont
+surtout **26 processus `adb` par minute** qui disparaissent au repos — le
+sondage d'appels et celui des notifications, qui passaient encore par la forme
+jetable.
+
+**Le widget sait quand il est masqué.** `document.hidden` ne suffit pas : sous
+X11, masquer une fenêtre sans décor ne provoque pas toujours de
+`visibilitychange`, et la page se croyait visible en étant invisible — elle
+réveillait alors le téléphone toutes les vingt secondes pour personne. Le
+processus principal, lui, sait, et le dit (`launcher:shown` / `launcher:hidden`).
+
+**Le fond flouté voyage en JPEG.** La photographie de l'écran traverse l'IPC en
+base64 à chaque apparition du widget. En PNG elle pèse 287 ko ; en JPEG de
+qualité 72, dont la perte ne se voit pas sous un verre dépoli, 29,5 ko — dix
+fois moins. Deux appuis rapprochés sur le raccourci réutilisent la même image
+pendant 2,5 s plutôt que de rephotographier l'écran.
 
 ### Ce qui coûte quand une application est ouverte
 

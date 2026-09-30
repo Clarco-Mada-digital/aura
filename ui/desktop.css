@@ -1,0 +1,336 @@
+/* Aura — mode bureau.
+   Mêmes teintes que le widget, mais à l'échelle d'un écran entier : ici le
+   verre n'est plus une plaque posée sur le bureau, c'est le bureau. */
+
+:root {
+  --glass: rgba(14, 16, 24, 0.72);
+  --glass-strong: rgba(18, 21, 31, 0.92);
+  --edge: rgba(255, 255, 255, 0.10);
+  --edge-soft: rgba(255, 255, 255, 0.06);
+  --text: #eef1f8;
+  --muted: rgba(238, 241, 248, 0.55);
+  --faint: rgba(238, 241, 248, 0.32);
+  --violet: #7c5cff;
+  --cyan: #38d6d6;
+  --accent: linear-gradient(120deg, var(--violet), var(--cyan));
+  --danger: #ff6b81;
+  --ok: #4ade80;
+  --barre: 3.5rem;
+  --titre: 2.125rem;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* `hidden` doit gagner contre les règles de classe. Sans ce garde-fou, un
+   `display: grid` posé sur `.lanceur` ou `.voile` l'emporte sur la feuille par
+   défaut du navigateur, et un panneau marqué caché reste à l'écran — c'est
+   exactement ce qui s'est produit au premier essai. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #0b0d15;
+  color: var(--text);
+  font-family: "Inter", "SF Pro Display", system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── Fond ─────────────────────────────────────────────────────────────── */
+
+.fond {
+  position: fixed;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+.fond::after {
+  /* Une voile sombre : sans elle, une photo claire rend les icônes illisibles. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.42));
+}
+
+/* ── Scène ────────────────────────────────────────────────────────────── */
+
+.scene {
+  position: fixed;
+  inset: 0 0 var(--barre) 0;
+  z-index: 1;
+}
+.widgets, .icones, .cadres { position: absolute; inset: 0; }
+.cadres { pointer-events: none; }
+
+.vide {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: .4rem;
+  text-align: center;
+  color: var(--muted);
+}
+.vide strong { font-size: 1.15rem; color: var(--text); }
+
+/* ── Widgets ──────────────────────────────────────────────────────────── */
+
+.widget {
+  position: absolute;
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  border-radius: 1.25rem;
+  padding: 1rem 1.15rem;
+  backdrop-filter: blur(22px) saturate(140%);
+  box-shadow: 0 20px 50px rgba(0,0,0,.42);
+  cursor: grab;
+  transition: box-shadow 180ms var(--ease), border-color 180ms var(--ease);
+}
+.widget:hover { border-color: rgba(255,255,255,.18); }
+.widget.saisi { cursor: grabbing; box-shadow: 0 30px 70px rgba(0,0,0,.55); }
+
+.widget-titre {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--faint);
+  margin-bottom: .55rem;
+}
+
+/* Horloge */
+.w-horloge .h { font-size: 3.1rem; font-weight: 600; line-height: 1; letter-spacing: -.02em; }
+.w-horloge .d { color: var(--muted); margin-top: .35rem; text-transform: capitalize; }
+
+/* Appareil */
+.w-appareil { min-width: 13rem; }
+.w-appareil .nom { font-weight: 600; margin-bottom: .6rem; }
+.w-appareil .ligne { display: flex; align-items: center; gap: .5rem; color: var(--muted); font-size: .88rem; margin-top: .35rem; }
+.w-appareil .jauge { height: .4rem; border-radius: 1rem; background: rgba(255,255,255,.1); overflow: hidden; margin: .5rem 0 .2rem; }
+.w-appareil .jauge i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.w-appareil .jauge.faible i { background: var(--danger); }
+
+/* Notifications */
+.w-notifs { width: 20rem; max-height: 22rem; overflow: auto; }
+.w-notifs .aucune { color: var(--faint); font-size: .88rem; }
+.n-item {
+  display: flex; gap: .6rem; align-items: flex-start;
+  padding: .55rem 0; border-top: 1px solid var(--edge-soft); cursor: pointer;
+}
+.n-item:first-of-type { border-top: 0; }
+.n-item .t { font-weight: 600; font-size: .9rem; }
+.n-item .c { color: var(--muted); font-size: .82rem; margin-top: .1rem;
+             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ── Icônes du bureau ─────────────────────────────────────────────────── */
+
+.icone {
+  position: absolute;
+  width: 5.5rem;
+  display: grid;
+  justify-items: center;
+  gap: .4rem;
+  padding: .5rem .25rem;
+  border-radius: .9rem;
+  cursor: grab;
+  text-align: center;
+}
+.icone:hover { background: rgba(255,255,255,.08); }
+.icone.saisi { cursor: grabbing; }
+.icone .nom {
+  font-size: .78rem; color: var(--text);
+  text-shadow: 0 1px 4px rgba(0,0,0,.7);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+
+.app-icon {
+  width: 3.25rem; height: 3.25rem;
+  border-radius: .95rem;
+  display: grid; place-items: center;
+  font-weight: 600; font-size: 1.3rem;
+  overflow: hidden;
+  box-shadow: 0 8px 22px rgba(0,0,0,.4);
+}
+.app-icon img { width: 100%; height: 100%; object-fit: cover; }
+.app-icon.sm { width: 2rem; height: 2rem; border-radius: .6rem; font-size: .85rem; }
+
+/* ── Cadres de fenêtres logées ────────────────────────────────────────── */
+
+/* La barre de titre est le seul HTML d'une fenêtre logée : la surface Android
+   occupe tout le reste, et rien ne peut être dessiné par-dessus. */
+.cadre {
+  position: absolute;
+  pointer-events: auto;
+  border-radius: .9rem .9rem 0 0;
+  background: var(--glass-strong);
+  border: 1px solid var(--edge);
+  border-bottom: 0;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  display: flex; align-items: center; gap: .5rem;
+  padding: 0 .5rem 0 .85rem;
+  height: var(--titre);
+  cursor: grab;
+}
+.cadre.saisi { cursor: grabbing; }
+.cadre.actif { border-color: rgba(124,92,255,.5); }
+.cadre .titre { flex: 1; font-size: .85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cadre .bouton {
+  width: 1.55rem; height: 1.55rem; border-radius: .5rem;
+  display: grid; place-items: center; color: var(--muted);
+}
+.cadre .bouton:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.cadre .bouton.fermer:hover { background: var(--danger); color: #fff; }
+.cadre .bouton svg { width: .95rem; height: .95rem; }
+
+/* La poignée de redimensionnement vit sous la fenêtre, hors de la surface. */
+.poignee {
+  position: absolute;
+  width: 1.1rem; height: 1.1rem;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  border-right: 2px solid rgba(255,255,255,.35);
+  border-bottom: 2px solid rgba(255,255,255,.35);
+  border-radius: 0 0 .35rem 0;
+}
+
+/* Une application épinglée en vignette : pas de barre de titre, juste un
+   liseré qui la signale au survol. */
+.vignette {
+  position: absolute;
+  pointer-events: auto;
+  border-radius: .75rem;
+  border: 1px solid transparent;
+  transition: border-color 160ms var(--ease);
+}
+.vignette:hover { border-color: rgba(124,92,255,.6); }
+
+/* ── Barre des tâches ─────────────────────────────────────────────────── */
+
+.barre {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: var(--barre);
+  z-index: 3;
+  display: flex; align-items: center; gap: .6rem;
+  padding: 0 .75rem;
+  background: var(--glass-strong);
+  border-top: 1px solid var(--edge);
+  backdrop-filter: blur(24px) saturate(150%);
+}
+
+.demarrer {
+  width: 2.5rem; height: 2.5rem; border-radius: .8rem;
+  display: grid; place-items: center;
+  background: rgba(124,92,255,.22);
+  border: 1px solid rgba(124,92,255,.4);
+}
+.demarrer:hover { background: rgba(124,92,255,.34); }
+.demarrer svg { fill: currentColor; stroke: none; }
+
+.taches { flex: 1; display: flex; gap: .4rem; overflow: hidden; }
+.tache {
+  display: flex; align-items: center; gap: .45rem;
+  padding: .35rem .7rem .35rem .4rem;
+  border-radius: .7rem;
+  background: rgba(255,255,255,.06);
+  border: 1px solid transparent;
+  max-width: 12rem;
+}
+.tache:hover { background: rgba(255,255,255,.12); }
+.tache.actif { border-color: rgba(124,92,255,.55); background: rgba(124,92,255,.16); }
+.tache .n { font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tache.repliee { opacity: .55; }
+
+.plateau { display: flex; align-items: center; gap: .55rem; }
+.etat { color: var(--muted); font-size: .82rem; }
+.heure { font-variant-numeric: tabular-nums; font-weight: 600; }
+.icone-btn {
+  width: 2.1rem; height: 2.1rem; border-radius: .6rem;
+  display: grid; place-items: center; color: var(--muted);
+}
+.icone-btn:hover { background: rgba(255,255,255,.1); color: var(--text); }
+
+/* ── Lanceur ──────────────────────────────────────────────────────────── */
+
+.lanceur {
+  position: fixed; inset: 0; z-index: 4;
+  background: rgba(6, 8, 14, .72);
+  backdrop-filter: blur(20px);
+  display: grid; place-items: center;
+  padding: 3rem;
+}
+.lanceur-boite {
+  width: min(58rem, 100%); max-height: 80vh;
+  display: flex; flex-direction: column; gap: 1.1rem;
+}
+#recherche {
+  width: 100%;
+  padding: .9rem 1.2rem;
+  border-radius: 1rem;
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  color: var(--text); font-size: 1rem; outline: none;
+}
+#recherche:focus { border-color: rgba(124,92,255,.6); }
+.grille {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: .5rem;
+  overflow: auto;
+  padding-bottom: 1rem;
+}
+.tuile {
+  display: grid; justify-items: center; gap: .5rem;
+  padding: .85rem .4rem;
+  border-radius: .9rem;
+  text-align: center;
+}
+.tuile:hover, .tuile.sel { background: rgba(255,255,255,.1); }
+.tuile .nom { font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+/* ── Voile de réglage ─────────────────────────────────────────────────── */
+
+.voile {
+  position: fixed; inset: 0; z-index: 5;
+  background: rgba(6, 8, 14, .7);
+  display: grid; place-items: center;
+}
+.panneau {
+  width: min(34rem, 92vw);
+  background: var(--glass-strong);
+  border: 1px solid var(--edge);
+  border-radius: 1.25rem;
+  padding: 1.4rem;
+  display: flex; flex-direction: column; gap: 1rem;
+}
+.panneau h2 { font-size: 1.05rem; }
+.fonds { display: grid; grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); gap: .6rem; }
+.fond-choix { height: 4.2rem; border-radius: .75rem; border: 2px solid transparent; cursor: pointer; }
+.fond-choix.actif { border-color: var(--violet); }
+.panneau-actions { display: flex; gap: .5rem; justify-content: flex-end; }
+.ghost {
+  padding: .5rem .9rem; border-radius: .7rem;
+  border: 1px solid var(--edge); color: var(--muted);
+}
+.ghost:hover { background: rgba(255,255,255,.08); color: var(--text); }
+
+/* ── Message ──────────────────────────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  left: 50%; bottom: calc(var(--barre) + 1rem);
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: .65rem 1.1rem;
+  border-radius: .8rem;
+  background: var(--glass-strong);
+  border: 1px solid var(--edge);
+  font-size: .88rem;
+  box-shadow: 0 18px 44px rgba(0,0,0,.5);
+}
+.toast.error { border-color: rgba(255,107,129,.55); }

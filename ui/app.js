@@ -778,6 +778,26 @@ function renderSettings() {
   field('Débit', 'Plus haut = plus net, plus de bande passante', select('bitrate', [['4M', '4 Mb/s'], ['8M', '8 Mb/s'], ['16M', '16 Mb/s'], ['24M', '24 Mb/s']]));
   field('Images par seconde', '', select('maxFps', [[30, '30 i/s'], [60, '60 i/s'], [90, '90 i/s'], [120, '120 i/s']]));
   field('Sans décor système', 'Masque la barre de navigation de l’écran virtuel', toggle('noSystemDecorations'));
+  // Sans effet sous X11 : le montrer quand même évite d'avoir à expliquer où se
+  // trouve un réglage qui n'apparaîtrait que sur certaines machines.
+  field('Fenêtres pilotables sous Wayland',
+    "Fait passer les fenêtres par XWayland : cliquer sur une vignette les ramène, au prix d'un peu de netteté aux échelles fractionnaires. Sans effet sous X11",
+    toggle('xwayland'));
+
+  // Ce qu'une fenêtre ouvre à son tour. Android pose la suite sur l'écran
+  // principal du téléphone et ne se laisse pas contredire : Aura ne peut que le
+  // constater et y répondre (voir `src/activity.js`).
+  group('Applications liées');
+  field('Ce qu’une fenêtre ouvre ailleurs',
+    "« Envoyer un message » depuis le composeur ouvre l'application concernée sur le téléphone, non dans une fenêtre",
+    select('followLaunches', [
+      ['auto', 'Ouvrir la fenêtre aussitôt'],
+      ['ask', 'Me le proposer'],
+      ['off', 'Ne rien faire'],
+    ]));
+  field('Montrer les validations',
+    "Choix de carte SIM, « ouvrir avec », permissions : ces boîtes n'existent que sur l'écran du téléphone, et le miroir s'ouvre pour y répondre",
+    toggle('mirrorOnDialog'));
 
   group('Lanceur');
   field('Toujours au-dessus', '', toggle('alwaysOnTop'));
@@ -985,8 +1005,18 @@ function renderNet(net) {
 /// pas écraser entre-temps l'état que l'utilisateur vient de demander.
 let quickBusy = false;
 
+/// Le widget est-il réellement à l'écran ?
+///
+/// `document.hidden` ne répond pas à cette question : sous X11, masquer une
+/// fenêtre sans décor ne provoque pas toujours de `visibilitychange`, et la page
+/// se croyait visible en étant invisible — les sondages réveillaient alors le
+/// téléphone toutes les vingt secondes pour personne. Le processus principal,
+/// lui, sait : il annonce `launcher:shown` et `launcher:hidden`.
+let àLÉcran = true;
+const visible = () => àLÉcran && !document.hidden;
+
 async function pollQuick() {
-  if (!state.device || document.hidden) return;
+  if (!state.device || !visible()) return;
   const fresh = await window.aura.quickState().catch(() => null);
   if (!fresh) return;
   quick = fresh;
@@ -1275,6 +1305,11 @@ async function openControlMenu(x, y) {
 
   menu.appendChild(item('Réseaux Wi-Fi', 'Voir, rejoindre, oublier', false, () => openPanel('wifi')));
   menu.appendChild(item('Écran du téléphone', 'Recopier l\'écran principal', false, openMirrorFromMenu));
+  // Le bureau est l'autre façon de se servir du téléphone : plein écran, avec
+  // les applications logées dedans plutôt que posées sur le bureau du système.
+  menu.appendChild(item('Mode bureau', 'Le téléphone comme unité centrale', false, () => {
+    window.aura.openDesktop().catch((err) => toast(messageErreur(err), true));
+  }));
   menu.appendChild(item('Épingler la fenêtre', 'Rester affiché après un clic ailleurs', !!state.settings.pinned,
     async () => {
       state.settings = await window.aura.saveSettings({ pinned: !state.settings.pinned });
@@ -1608,7 +1643,20 @@ function select(index, scroll = true) {
 // Hauteur utile du contenu, pour que la fenêtre s'ajuste au lieu de laisser du
 // vide sous les favoris. Les parties fixes sont mesurées, la scène est le seul
 // élément dont la hauteur dépend de ce qu'on affiche.
+/// Le calcul de hauteur est amorti : chaque frappe redessine la liste et
+/// appelait `fit`, qui lit `offsetHeight` et les styles calculés de toute la
+/// colonne — un recalcul de mise en page synchrone par caractère tapé, suivi
+/// d'un aller-retour vers le processus principal et d'un redimensionnement de
+/// fenêtre. Une seule mesure par salve suffit, et l'œil ne voit pas la
+/// différence.
+let fitDemandé = null;
+
 function fit() {
+  if (fitDemandé) return;
+  fitDemandé = setTimeout(() => { fitDemandé = null; mesurer(); }, 40);
+}
+
+function mesurer() {
   requestAnimationFrame(() => {
     // Un volet ouvert occupe toute la hauteur : il lui faut de la place pour
     // que la liste se lise, sans quoi on ferait défiler trois lignes.
@@ -1632,11 +1680,13 @@ function fit() {
     let frame = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     let rangs = 0;
     for (const enfant of shell.children) {
+      // Un seul `getComputedStyle` par enfant : l'appeler deux fois faisait deux
+      // fois le travail du moteur de rendu pour la même réponse.
+      const pose = getComputedStyle(enfant);
       // Volets, voiles et messages flottent au-dessus : ils ne prennent pas de
       // place dans la colonne.
-      const pose = getComputedStyle(enfant).position;
-      if (pose === 'absolute' || pose === 'fixed') continue;
-      if (enfant.hidden || getComputedStyle(enfant).display === 'none') continue;
+      if (pose.position === 'absolute' || pose.position === 'fixed') continue;
+      if (enfant.hidden || pose.display === 'none') continue;
       rangs++;
       if (!enfant.contains(inner)) frame += enfant.offsetHeight;
     }
@@ -1745,21 +1795,27 @@ function onTransfer(info) {
   }
 }
 
-/// Envoie une liste de chemins, après avoir tranché le sort des .apk.
-async function envoyer(chemins) {
+/// Envoie une liste de fichiers déposés, après avoir tranché le sort des .apk.
+///
+/// Un fichier est ici un `{ jeton, nom }` : le chemin reste au préchargement, et
+/// l'interface ne manipule que de quoi l'afficher et le désigner. Elle ne peut
+/// donc nommer que ce que l'utilisateur a réellement déposé.
+async function envoyer(fichiers) {
   if (!state.device) return toast('Aucun téléphone connecté', true);
-  const apks = chemins.filter((c) => /\.apk$/i.test(c));
-  const autres = chemins.filter((c) => !/\.apk$/i.test(c));
+  const apks = fichiers.filter((f) => /\.apk$/i.test(f.nom));
+  const autres = fichiers.filter((f) => !/\.apk$/i.test(f.nom));
 
   if (autres.length) {
-    window.aura.sendFiles(autres.map((path) => ({ path, action: 'push' }))).catch((err) => toast(messageErreur(err), true));
+    window.aura
+      .sendFiles(autres.map(({ jeton }) => ({ jeton, action: 'push' })))
+      .catch((err) => toast(messageErreur(err), true));
   }
   if (!apks.length) return;
 
   const choix = await demanderApk(apks);
   if (!choix) return;
   window.aura
-    .sendFiles(apks.map((path) => ({ path, action: choix })))
+    .sendFiles(apks.map(({ jeton }) => ({ jeton, action: choix })))
     .catch((err) => toast(messageErreur(err), true));
 }
 
@@ -1769,7 +1825,7 @@ function demanderApk(apks) {
   return new Promise((resolve) => {
     const voile = $('askApk');
     $('askTitle').textContent = apks.length > 1 ? `${apks.length} applications Android` : 'Application Android';
-    $('askText').textContent = apks.map((c) => c.split('/').pop()).join(', ');
+    $('askText').textContent = apks.map((f) => f.nom).join(', ');
     voile.hidden = false;
 
     const fermer = (valeur) => {
@@ -1833,9 +1889,9 @@ document.addEventListener('drop', (e) => {
   if (!estFichierExterne(e)) return;
   e.preventDefault();
   montrerVoile(false);
-  const chemins = [...e.dataTransfer.files].map((f) => window.aura.pathForFile(f)).filter(Boolean);
-  if (!chemins.length) return toast('Ce dépôt ne contient aucun fichier lisible', true);
-  envoyer(chemins);
+  const fichiers = [...e.dataTransfer.files].map((f) => window.aura.décrireFichier(f)).filter(Boolean);
+  if (!fichiers.length) return toast('Ce dépôt ne contient aucun fichier lisible', true);
+  envoyer(fichiers);
 });
 
 /// Ce qui ressemble à une adresse : de quoi proposer l'envoi au téléphone sans
@@ -2403,19 +2459,47 @@ window.aura.onNotifications((list) => {
   notifSignature = list.map((n) => n.key).join('\n');
   renderNotifications();
 });
+// Ce qu'une fenêtre a ouvert ailleurs. Le processus principal a vu surgir
+// quelque chose sur l'écran du téléphone et dit ce qu'il en a fait — ou ce qu'il
+// propose d'en faire.
+window.aura.onFollow?.((info) => {
+  if (info.type === 'dialogue') {
+    return toast('Une validation attend sur le téléphone — son écran s’ouvre', false);
+  }
+  if (info.type === 'ouverte') {
+    return toast(`${info.nom} s’est ouverte dans sa fenêtre`);
+  }
+  // Proposé, non imposé : l'alerte est cliquable, et s'efface d'elle-même si
+  // elle ne l'est pas.
+  toast(`${info.nom} s’est ouverte sur le téléphone — cliquez pour l’ouvrir ici`, false, () => {
+    window.aura.acceptFollow(info.package).catch((err) => toast(messageErreur(err), true));
+  });
+});
+
 window.aura.onWallpaper((frame) => paintWallpaper(frame));
 window.aura.onTransfer((info) => onTransfer(info));
 window.aura.onShown(() => {
+  àLÉcran = true;
   $('query').select();
   $('query').focus();
   pollNotifications();
   reconnect();
 });
+window.aura.onHidden?.(() => { àLÉcran = false; });
 
-// Les notifications, l'état de l'appareil et les radios se rafraîchissent tant
-// que la fenêtre est visible ; masquée, elle ne réveille pas le téléphone pour
-// rien.
-setInterval(() => { if (!document.hidden) { pollNotifications(); pollQuick(); } }, 20000);
-setInterval(() => { if (!document.hidden) reconnect(); }, 60000);
+// L'état de l'appareil et les radios se rafraîchissent tant que la fenêtre est
+// visible ; masquée, elle ne réveille pas le téléphone pour rien.
+//
+// Les notifications ne figurent plus ici : le guet du processus principal les
+// sonde déjà toutes les dix secondes et pousse la liste par `onNotifications`.
+// Les deux sondages se doublaient — jusqu'à deux `dumpsys notification` d'un
+// mégaoctet pour un seul changement. La page ne redemande donc plus que ce
+// qu'elle est seule à savoir vouloir : le détail, quand le volet est ouvert.
+setInterval(() => {
+  if (!visible()) return;
+  pollQuick();
+  if (panelOpen() && !$('panelNotifs').hidden) loadNotifications();
+}, 20000);
+setInterval(() => { if (visible()) reconnect(); }, 60000);
 
 boot().catch((err) => toast(messageErreur(err), true));
