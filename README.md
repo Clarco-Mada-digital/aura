@@ -363,6 +363,47 @@ Bluetooth apparié avec lui. Aucun contournement ADB n'existe.
 
 ---
 
+## X11, Wayland et XWayland
+
+Aura pilote les fenêtres des autres — celles de scrcpy — et c'est le protocole
+graphique qui décide si c'est possible.
+
+Sous **X11**, `wmctrl` lève une fenêtre et `xdotool` la réduit : cliquer sur une
+vignette de session ramène la fenêtre correspondante. Sous **Wayland**, aucun
+protocole standard ne permet à une application d'en lever une autre. Ce n'est
+pas un oubli mais un choix de conception : une fenêtre ne peut pas s'imposer
+devant les autres.
+
+Entre les deux vit **XWayland**, le serveur X de compatibilité que toute session
+Wayland fait tourner. Une fenêtre qui passe par lui reste une fenêtre X11 :
+`wmctrl` la voit, et tout le pilotage fonctionne à nouveau.
+
+C'est la porte de sortie, parce que scrcpy sait emprunter l'une ou l'autre — son
+SDL embarque les deux pilotes et obéit à `SDL_VIDEODRIVER`. Laissé libre, SDL
+2.0.22 et suivants choisissent Wayland, et les vignettes cessent alors de
+fonctionner **sans rien dire**. Aura impose donc `x11` sous Wayland.
+
+Le compromis est réel et se règle (*Fenêtres pilotables sous Wayland*) :
+
+| | Fenêtres pilotables | Netteté |
+| :--- | :--- | :--- |
+| XWayland (défaut) | oui | légèrement dégradée aux échelles fractionnaires (125 %, 150 %) |
+| Wayland natif | non | exacte à toutes les échelles |
+
+Le défaut privilégie la fonction : une vignette qui ne répond pas est plus
+déroutante qu'un pixel légèrement adouci. `AURA_SDL_VIDEODRIVER` tranche sans
+passer par l'interface.
+
+**Le fond flouté est désactivé sous Wayland.** Photographier l'écran y passe par
+`xdg-desktop-portal`, qui demande à l'utilisateur de désigner un écran — à
+chaque prise. Le fond se prenant à chaque apparition du widget, ce serait une
+boîte de dialogue par appui sur le raccourci.
+
+Le diagnostic (⋯ → Réglages → Diagnostic) indique la session détectée et, le cas
+échéant, que les fenêtres transitent par XWayland.
+
+---
+
 ## Applications liées
 
 Une application n'est pas une île. Depuis le composeur, « envoyer un message »
@@ -491,7 +532,8 @@ src/icons.js     extraction des icônes (lecture partielle de l'APK)
 src/arsc.js      lecture de resources.arsc, pour les icônes renommées
 src/store.js     réglages, favoris, historique (JSON)
 src/install.js   téléchargement et vérification de scrcpy
-src/windows.js   lever et réduire les fenêtres d'application (X11)
+src/windows.js   lever et réduire les fenêtres d'application (X11 / XWayland)
+src/session.js   X11 ou Wayland, et ce que chacun permet
 src/log.js       journal de bord, pour les échecs qu'on ne voit pas passer
 src/update.js    vérification et installation des nouvelles versions
 ui/              interface : index.html, style.css, app.js

@@ -778,6 +778,11 @@ function renderSettings() {
   field('Débit', 'Plus haut = plus net, plus de bande passante', select('bitrate', [['4M', '4 Mb/s'], ['8M', '8 Mb/s'], ['16M', '16 Mb/s'], ['24M', '24 Mb/s']]));
   field('Images par seconde', '', select('maxFps', [[30, '30 i/s'], [60, '60 i/s'], [90, '90 i/s'], [120, '120 i/s']]));
   field('Sans décor système', 'Masque la barre de navigation de l’écran virtuel', toggle('noSystemDecorations'));
+  // Sans effet sous X11 : le montrer quand même évite d'avoir à expliquer où se
+  // trouve un réglage qui n'apparaîtrait que sur certaines machines.
+  field('Fenêtres pilotables sous Wayland',
+    "Fait passer les fenêtres par XWayland : cliquer sur une vignette les ramène, au prix d'un peu de netteté aux échelles fractionnaires. Sans effet sous X11",
+    toggle('xwayland'));
 
   // Ce qu'une fenêtre ouvre à son tour. Android pose la suite sur l'écran
   // principal du téléphone et ne se laisse pas contredire : Aura ne peut que le

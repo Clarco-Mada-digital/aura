@@ -14,6 +14,8 @@
 
 const { execFile } = require('child_process');
 
+const session = require('./session');
+
 function run(bin, args, timeout = 4000) {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout }, (err, stdout) =>
@@ -24,15 +26,22 @@ function run(bin, args, timeout = 4000) {
 
 let available = null;
 
+/// Oublie ce qui a été trouvé — après un changement de réglage, par exemple.
+function reset() {
+  available = null;
+}
+
 /// Outils présents sur la machine, testés une seule fois.
-async function tools() {
+///
+/// Le test d'existence ne suffit pas : `wmctrl` s'installe très bien dans une
+/// session Wayland, où il ne verra jamais une fenêtre native. On tranche donc
+/// d'abord sur le protocole, puis seulement sur les binaires.
+async function tools(options = {}) {
   if (available) return available;
-  // Ces outils sont ceux de X11. Ailleurs — Windows, macOS, ou une session
-  // Wayland sans couche X — on ne prétend pas piloter les fenêtres des autres
-  // processus : l'interface le dira plutôt que d'échouer en silence.
-  if (process.platform !== 'linux') {
-    available = { wmctrl: false, xdotool: false, xprop: false, xlib: false,
-      raison: `le pilotage des fenêtres n'est disponible que sous Linux/X11 (système : ${process.platform})` };
+
+  const verdict = session.windowControl(options);
+  if (!verdict.possible) {
+    available = { wmctrl: false, xdotool: false, xprop: false, xlib: false, raison: verdict.raison };
     return available;
   }
   const [wmctrl, xdotool, xprop, python] = await Promise.all([
@@ -46,6 +55,11 @@ async function tools() {
     xdotool: xdotool.ok,
     xprop: xprop.ok,
     xlib: python.ok,
+    // « x11 » ou « xwayland » : la seconde dit que les fenêtres de scrcpy
+    // transitent par la couche de compatibilité, et que c'est ce qui les rend
+    // pilotables. Utile au diagnostic, où l'on cherche pourquoi ça marche ici
+    // et pas là.
+    via: verdict.via,
   };
   return available;
 }
@@ -118,8 +132,8 @@ async function minimize(id) {
 ///
 /// Retourne ce qui a été fait, pour que l'interface puisse le dire quand rien
 /// n'a pu l'être.
-async function toggle(pid) {
-  const found = await tools();
+async function toggle(pid, options = {}) {
+  const found = await tools(options);
   if (found.raison) return { action: 'none', reason: found.raison };
 
   const id = await windowOf(pid);
@@ -137,4 +151,4 @@ async function toggle(pid) {
     : { action: 'none', reason: 'la levée de fenêtre demande wmctrl' };
 }
 
-module.exports = { toggle, windowOf, raise, minimize, tools };
+module.exports = { toggle, windowOf, raise, minimize, tools, reset };

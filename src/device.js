@@ -14,6 +14,8 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
+const session_ = require('./session');
+
 const OWNER_USER = '0';
 
 /// Guillemets simples POSIX : la seule façon sûre de passer une valeur au shell
@@ -86,8 +88,8 @@ function engineCandidates() {
 /// bibliothèques d'Electron au lieu de celles du système — scrcpy meurt sur
 /// une erreur de symbole, sans rien afficher. On rend donc au fils un
 /// environnement propre.
-function childEnv() {
-  const env = { ...process.env };
+function childEnv(extra = null) {
+  const env = { ...process.env, ...(extra || {}) };
   const appdir = env.APPDIR;
   if (!appdir) return env;
   for (const key of ['LD_LIBRARY_PATH', 'PATH', 'XDG_DATA_DIRS', 'GSETTINGS_SCHEMA_DIR', 'LD_PRELOAD', 'GTK_PATH', 'GDK_PIXBUF_MODULE_FILE', 'PERLLIB', 'PYTHONHOME', 'QT_PLUGIN_PATH']) {
@@ -1003,9 +1005,16 @@ function launchApp(serial, app, settings, hooks = {}) {
     }
 
     const id = nextSessionId++;
+    // Sous Wayland, laisser SDL choisir seul donne une fenêtre Wayland native,
+    // qu'aucun outil ne sait plus lever ni réduire. Passer par XWayland rend les
+    // vignettes de session opérantes (voir `session.js`).
+    const pilote = session_.videoDriver({ xwayland: settings.xwayland !== false });
     let child;
     try {
-      child = spawn(engine.path, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() });
+      child = spawn(engine.path, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: childEnv(pilote ? { SDL_VIDEODRIVER: pilote } : null),
+      });
     } catch (err) {
       return reject(err);
     }

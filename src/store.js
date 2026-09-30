@@ -61,6 +61,10 @@ const DEFAULTS = {
   //   'ask'  le proposer, sans rien imposer
   //   'auto' ouvrir aussitôt la fenêtre correspondante
   followLaunches: 'ask',
+  // Sous Wayland, faire passer les fenêtres d'application par XWayland. Elles
+  // restent alors pilotables — cliquer sur une vignette ramène la fenêtre — au
+  // prix d'un peu de netteté aux échelles fractionnaires. Sans effet sous X11.
+  xwayland: true,
   // Les boîtes de dialogue du système — choix de la carte SIM, « ouvrir avec »,
   // demande de permission — ne savent pas s'afficher sur un écran virtuel.
   // Sans le miroir, il n'y a rien à valider depuis l'ordinateur.
@@ -131,6 +135,7 @@ const SCHEMA = {
   mirrorOnCall: bool,
   mirrorOnDialog: bool,
   followLaunches: { type: 'enum', values: ['off', 'ask', 'auto'] },
+  xwayland: bool,
   freeHeight: bool,
   autoUpdate: bool,
   showSystemApps: bool,

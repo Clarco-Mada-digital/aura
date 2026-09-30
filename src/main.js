@@ -13,6 +13,7 @@ const url = require('url');
 const device = require('./device');
 const activity = require('./activity');
 const layout = require('./layout');
+const session = require('./session');
 const { Store } = require('./store');
 const { IconStore, openDexCacheDirs } = require('./icons');
 const windows = require('./windows');
@@ -191,6 +192,11 @@ const FOND_FRAICHEUR = 2500;
 let fondPris = 0;
 
 async function captureWallpaper(force = false) {
+  // Sous Wayland, chaque capture passe par le portail du bureau, qui demande à
+  // l'utilisateur de désigner un écran. Le fond se prend à chaque apparition du
+  // widget : ce serait une boîte de dialogue par appui sur le raccourci.
+  const permis = session.wallpaperCapture();
+  if (!permis.possible) return;
   if (!force && Date.now() - fondPris < FOND_FRAICHEUR) return;
 
   const bounds = win.getBounds();
@@ -405,6 +411,9 @@ function iconFile(pkg) {
 }
 
 // ── Sessions ────────────────────────────────────────────────────────────────
+
+/// Les options de pilotage des fenêtres, telles que les réglages les fixent.
+const optionsFenetres = () => ({ xwayland: store.get('xwayland') !== false });
 
 function sessionList() {
   return [...sessions.values()].map(({ child, log, ...rest }) => ({ ...rest, pid: child.pid }));
@@ -644,10 +653,10 @@ let mirrorId = null;
 async function openMirror() {
   if (mirrorId && sessions.has(mirrorId)) {
     const existante = sessions.get(mirrorId);
-    const bougé = await windows.toggle(existante.child.pid);
+    const bougé = await windows.toggle(existante.child.pid, optionsFenetres());
     // Si la fenêtre était déjà devant, `toggle` l'aurait réduite : ce n'est
     // pas ce qu'on veut quand on demande explicitement le miroir.
-    if (bougé.action === 'minimized') await windows.toggle(existante.child.pid);
+    if (bougé.action === 'minimized') await windows.toggle(existante.child.pid, optionsFenetres());
     return { id: mirrorId, mirror: true };
   }
 
@@ -765,7 +774,8 @@ function announceUpdate(etat) {
 async function gatherDiagnostic() {
   const report = await device.diagnostics(current.serial);
   report.aura = app.getVersion();
-  report.tools = await windows.tools();
+  report.tools = await windows.tools(optionsFenetres());
+  report.session = session.sessionType();
   report.log = log.chemin();
   report.lastFailure = lastFailure;
   return report;
@@ -787,7 +797,8 @@ function formatDiagnostic(d) {
   lignes.push(
     outils.raison
       ? `Fenêtres : ${outils.raison}`
-      : `Fenêtres : wmctrl ${outils.wmctrl ? 'oui' : 'non'}, xdotool ${outils.xdotool ? 'oui' : 'non'}, python3-xlib ${outils.xlib ? 'oui' : 'non'}`
+      : `Fenêtres : ${outils.via === 'xwayland' ? 'via XWayland — ' : ''}` +
+        `wmctrl ${outils.wmctrl ? 'oui' : 'non'}, xdotool ${outils.xdotool ? 'oui' : 'non'}, python3-xlib ${outils.xlib ? 'oui' : 'non'}`
   );
   lignes.push(`Journal : ${d.log || 'désactivé'}`);
 
@@ -1090,7 +1101,7 @@ function registerIpc() {
   ipcMain.handle('session:toggle', async (_e, id) => {
     const session = sessions.get(id);
     if (!session) return { action: 'none', reason: 'session terminée' };
-    return windows.toggle(session.child.pid);
+    return windows.toggle(session.child.pid, optionsFenetres());
   });
 
   // Installation du moteur vidéo, avec l'avancement renvoyé au fil de l'eau.
@@ -1139,6 +1150,9 @@ function registerIpc() {
   ipcMain.handle('settings:set', async (_e, patch) => {
     const settings = store.set(patch);
     if ('alwaysOnTop' in patch && win) win.setAlwaysOnTop(!!settings.alwaysOnTop);
+    // Le protocole change ce que `wmctrl` peut voir : le verdict mis en cache
+    // n'est plus valable.
+    if ('xwayland' in patch) windows.reset();
     if ('hotkey' in patch) {
       const result = registerHotkey();
       return { ...store.all, hotkeyResult: result };
