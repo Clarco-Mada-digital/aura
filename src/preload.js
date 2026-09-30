@@ -99,6 +99,7 @@ contextBridge.exposeInMainWorld('aura', {
   quit: () => invoke('window:quit'),
   refreshWallpaper: () => invoke('wallpaper:refresh'),
   openMirror: () => invoke('mirror:open'),
+  openDesktop: () => invoke('desktop:open'),
   acceptFollow: (pkg) => invoke('follow:accept', pkg),
   updateState: () => invoke('update:state'),
   checkUpdate: () => invoke('update:check'),

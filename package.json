@@ -1,6 +1,6 @@
 {
   "name": "aura",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "description": "Un widget de bureau pour ouvrir vos applications Android, propulsé par scrcpy.",
   "main": "src/main.js",
   "scripts": {
@@ -13,7 +13,7 @@
     "dist:mac": "electron-builder --mac dmg zip",
     "release": "bash scripts/release.sh",
     "verif:electron": "electron scripts/verifier-electron.js",
-    "test": "node --check src/main.js && node --check src/device.js && node --check src/activity.js && node --check src/layout.js && node --check src/session.js && node --check src/preload.js && node --check src/preload-diag.js && node --check src/store.js && node --check src/icons.js && node --check src/arsc.js && node --check src/install.js && node --check src/windows.js && node --check src/update.js && node --check src/log.js && node --check ui/app.js && node --check ui/diagnostic.js && node --test"
+    "test": "node --check src/main.js && node --check src/device.js && node --check src/activity.js && node --check src/layout.js && node --check src/session.js && node --check src/desktop.js && node --check src/embed.js && node --check src/preload-desktop.js && node --check ui/desktop.js && node --check src/preload.js && node --check src/preload-diag.js && node --check src/store.js && node --check src/icons.js && node --check src/arsc.js && node --check src/install.js && node --check src/windows.js && node --check src/update.js && node --check src/log.js && node --check ui/app.js && node --check ui/diagnostic.js && node --test"
   },
   "author": {
     "name": "Mada Digital",

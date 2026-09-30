@@ -1305,6 +1305,11 @@ async function openControlMenu(x, y) {
 
   menu.appendChild(item('Réseaux Wi-Fi', 'Voir, rejoindre, oublier', false, () => openPanel('wifi')));
   menu.appendChild(item('Écran du téléphone', 'Recopier l\'écran principal', false, openMirrorFromMenu));
+  // Le bureau est l'autre façon de se servir du téléphone : plein écran, avec
+  // les applications logées dedans plutôt que posées sur le bureau du système.
+  menu.appendChild(item('Mode bureau', 'Le téléphone comme unité centrale', false, () => {
+    window.aura.openDesktop().catch((err) => toast(messageErreur(err), true));
+  }));
   menu.appendChild(item('Épingler la fenêtre', 'Rester affiché après un clic ailleurs', !!state.settings.pinned,
     async () => {
       state.settings = await window.aura.saveSettings({ pinned: !state.settings.pinned });

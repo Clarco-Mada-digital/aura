@@ -24,6 +24,7 @@ un grand écran.
 | **Envoyer au téléphone** | Déposez un fichier sur le widget : il part dans les Téléchargements. Un `.apk` propose l'installation. Une adresse tapée dans la recherche s'ouvre sur le téléphone |
 | **Réseaux Wi-Fi** | ⋯ → « Réseaux Wi-Fi » : ce qui est capté, ce qui est enregistré, rejoindre un réseau — y compris masqué — ou l'oublier |
 | **Applications liées** | « Envoyer un message » depuis le composeur ouvre l'application concernée **dans sa propre fenêtre**. Le choix de carte SIM ou « ouvrir avec » fait apparaître l'écran du téléphone, le temps de répondre |
+| **Mode bureau** | Un plein écran où le téléphone devient la machine : fond d'écran, widgets, icônes, et les applications Android **logées dans le bureau** comme les fenêtres d'un système d'exploitation |
 | **Raccourci global** | `Ctrl+Alt+Espace` fait apparaître ou disparaître le widget |
 | **Icône de barre** | Le widget vit dans la zone de notification, jamais dans la barre des tâches |
 
@@ -61,8 +62,9 @@ Aura **ne décode pas la vidéo et ne compose pas de fenêtres**. Il délègue t
 téléphone, décodage matériel sur le PC (VAAPI, D3D11VA, VideoToolbox), affichage
 GPU. Trois conséquences pratiques :
 
-**Aucune fenêtre n'est reparentée.** Chaque application est un processus isolé
-dont la fenêtre appartient au gestionnaire de fenêtres du système : accroche aux
+**Aucune fenêtre n'est reparentée** — sauf en mode bureau, qui l'assume et en
+paie le prix. Partout ailleurs, chaque application est un processus isolé dont
+la fenêtre appartient au gestionnaire de fenêtres du système : accroche aux
 bords, Alt+Tab et multi-écran fonctionnent, et une application qui tombe
 n'emporte ni les autres, ni le widget.
 
@@ -363,6 +365,79 @@ Bluetooth apparié avec lui. Aucun contournement ADB n'existe.
 
 ---
 
+## Le mode bureau
+
+Le widget est un lanceur posé sur *votre* bureau. Le mode bureau est l'inverse :
+un plein écran où **le téléphone devient la machine**. Fond d'écran, widgets
+posés où l'on veut, icônes d'applications, barre des tâches — et les
+applications Android logées dedans, avec barre de titre, déplacement,
+redimensionnement et réduction.
+
+Il s'ouvre depuis le menu ⋯ (« Mode bureau »), depuis l'icône de barre, ou au
+lancement avec `--desktop`. Le widget continue de vivre sa vie : les deux modes
+cohabitent, et c'est le même téléphone, le même inventaire, les mêmes sessions.
+
+### Ce que « loger une fenêtre » veut dire
+
+Partout ailleurs, Aura **ne reparente jamais** les fenêtres de scrcpy : chacune
+appartient au gestionnaire de fenêtres du système, d'où Alt+Tab, l'accroche aux
+bords et le multi-écran qui fonctionnent. Le mode bureau fait l'inverse, et il
+faut savoir ce que cela coûte.
+
+Retirer une fenêtre à son gestionnaire tient en trois gestes, et l'ordre compte
+— vérifié sur Cinnamon/Muffin, où reparenter directement ne tient pas une
+seconde :
+
+1. **La replier.** Le gestionnaire voit l'`UnmapNotify`, la considère retirée,
+   détruit son cadre et la rend à la racine.
+2. **Attendre qu'il ait fini.** C'est un aller-retour. Agir avant, c'est courir
+   contre lui — et perdre, puisqu'il agit en dernier.
+3. **La déclarer `override-redirect`.** Il cesse alors de la considérer : plus
+   de cadre, plus de placement imposé, plus de reprise au prochain `map`. C'est
+   ce que font les menus déroulants, pour la même raison.
+
+Une fenêtre logée sort donc de la juridiction du gestionnaire : plus de
+décoration, plus d'Alt+Tab, plus de barre des tâches système. Tout ce qu'il
+faisait pour elle, le bureau le refait lui-même. C'est un gestionnaire de
+fenêtres en miniature, et c'est le prix d'un bureau qui **contient** vraiment
+ses fenêtres.
+
+### La contrainte qui dessine tout
+
+**Une fenêtre X11 enfant est peinte par le serveur X, au-dessus de tout ce que
+Chromium dessine.** Aucun élément HTML ne peut passer par-dessus une application
+logée.
+
+D'où la forme des fenêtres : la barre de titre n'est pas *sur* l'application
+mais *au-dessus* d'elle, dans la bande qu'elle ne couvre pas ; la poignée de
+redimensionnement est *sous* son coin. Le cadre est un contour, pas un
+conteneur. Qui touche à `ui/desktop.js` doit avoir cela en tête.
+
+### Les widgets
+
+Horloge et date, état de l'appareil (batterie, Android, radios), notifications
+en direct — cliquables, elles ouvrent l'application qui les a posées. Tous se
+déplacent à la souris, et leur position est retenue.
+
+Les icônes d'applications se posent sur le bureau par un clic droit dans le
+lanceur, et se retirent par un clic droit dessus.
+
+**Les widgets Android — ceux de l'écran d'accueil du téléphone — ne sont pas
+accessibles.** `AppWidgetHost` est une API réservée aux lanceurs tournant *sur*
+l'appareil, et aucune commande ADB ne l'expose. L'équivalent qu'offre Aura est
+une **vignette** : une application épinglée sans barre de titre, réduite, posée
+sur le bureau — vivante et interactive, là où un widget Android ne serait
+qu'affiché.
+
+### Là où c'est impossible
+
+Le reparentage demande X11 — XWayland compris. Sans lui (Wayland pur,
+`python3-xlib` absent), le bureau ne s'effondre pas : fond d'écran, widgets,
+icônes et lanceur fonctionnent, et les applications s'ouvrent en fenêtres
+flottantes comme d'habitude. L'interface le dit au lieu d'afficher un cadre vide.
+
+---
+
 ## X11, Wayland et XWayland
 
 Aura pilote les fenêtres des autres — celles de scrcpy — et c'est le protocole
@@ -534,9 +609,11 @@ src/store.js     réglages, favoris, historique (JSON)
 src/install.js   téléchargement et vérification de scrcpy
 src/windows.js   lever et réduire les fenêtres d'application (X11 / XWayland)
 src/session.js   X11 ou Wayland, et ce que chacun permet
+src/desktop.js   mode bureau : fenêtre, mise en page, fenêtres logées
+src/embed.js     reparentage X11 — retirer une fenêtre à son gestionnaire
 src/log.js       journal de bord, pour les échecs qu'on ne voit pas passer
 src/update.js    vérification et installation des nouvelles versions
-ui/              interface : index.html, style.css, app.js
+ui/              interfaces : le widget (index.html) et le bureau (desktop.html)
 test/            filet de tests : parseurs sur sorties réelles, interface jsdom
 ```
 

@@ -5,7 +5,7 @@
 // Le rendu ne parle jamais à adb ni à scrcpy : il passe par les canaux déclarés
 // ici, ce qui laisse le contexte d'isolation actif dans la fenêtre.
 
-const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, Notification, nativeImage, screen, shell, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, Notification, nativeImage, screen, shell, desktopCapturer, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const url = require('url');
@@ -14,6 +14,7 @@ const device = require('./device');
 const activity = require('./activity');
 const layout = require('./layout');
 const session = require('./session');
+const desktop = require('./desktop');
 const { Store } = require('./store');
 const { IconStore, openDexCacheDirs } = require('./icons');
 const windows = require('./windows');
@@ -354,6 +355,7 @@ async function pollNotifications() {
   const list = await device.listNotifications(current.serial);
   knownKeys = seen;
   if (win && !win.isDestroyed()) win.webContents.send('notifications:changed', list);
+  desktop.envoyer('notifications:changed', list);
 
   // Au premier passage, tout est « nouveau » : annoncer l'arriéré au démarrage
   // n'aurait aucun sens.
@@ -420,7 +422,9 @@ function sessionList() {
 }
 
 function broadcastSessions() {
-  if (win && !win.isDestroyed()) win.webContents.send('sessions:changed', sessionList());
+  const liste = sessionList();
+  if (win && !win.isDestroyed()) win.webContents.send('sessions:changed', liste);
+  desktop.envoyer('sessions:changed', liste);
 }
 
 /// Taille d'ouverture d'une fenêtre d'application, pour cet écran-ci.
@@ -474,11 +478,15 @@ async function launch(pkg, once = null) {
   try {
     session = await device.launchApp(current.serial, app_, settings, {
       onUpdate: (s) => {
-        if (s.state === 'stopped' || s.state === 'failed') sessions.delete(s.id);
+        if (s.state === 'stopped' || s.state === 'failed') {
+          sessions.delete(s.id);
+          desktop.oublier(s.id);
+        }
         broadcastSessions();
       },
       onFail: (s) => {
         sessions.delete(s.id);
+        desktop.oublier(s.id);
         broadcastSessions();
         reportFailure(s);
       },
@@ -769,6 +777,20 @@ function announceUpdate(etat) {
   n.show();
 }
 
+// ── Mode bureau ─────────────────────────────────────────────────────────────
+
+/// Ouvre le bureau — ou le ramène s'il est déjà là.
+function ouvrirBureau() {
+  desktop.ouvrir({
+    store,
+    onFermé: () => {
+      // Les fenêtres logées ont été rendues au système par `desktop` : le
+      // lanceur reprend la main sur elles comme avant.
+      broadcastSessions();
+    },
+  });
+}
+
 // ── Diagnostic ──────────────────────────────────────────────────────────────
 
 async function gatherDiagnostic() {
@@ -1034,6 +1056,69 @@ function registerIpc() {
 
   ipcMain.handle('mirror:open', async () => openMirror());
 
+  // ── Mode bureau ───────────────────────────────────────────────────────────
+  //
+  // Le bureau est une seconde fenêtre, avec son propre pont. Il partage
+  // l'appareil, l'inventaire et les sessions du lanceur — c'est le même
+  // téléphone — mais loge les fenêtres au lieu de les laisser flotter.
+
+  ipcMain.handle('desktop:open', async () => { ouvrirBureau(); return true; });
+  ipcMain.handle('desktop:close', async () => { desktop.fermer(); return true; });
+
+  ipcMain.handle('desktop:bootstrap', async () => {
+    // Le bureau peut s'ouvrir avant le lanceur — `--desktop` au démarrage, ou
+    // l'icône de barre — et l'appareil n'est alors pas encore joint. On s'en
+    // charge ici plutôt que d'afficher « aucun téléphone » à un utilisateur
+    // dont le téléphone est branché.
+    if (!current.serial) await connect().catch(() => {});
+    return {
+      device: current.info,
+      apps: appsCache.apps,
+      sessions: sessionList(),
+      layout: store.get('bureau'),
+      ancrage: await desktop.praticable(),
+    };
+  });
+
+  ipcMain.handle('desktop:layout:get', async () => store.get('bureau'));
+  ipcMain.handle('desktop:layout:set', async (_e, patch) => {
+    const fusion = { ...(store.get('bureau') || {}), ...(patch || {}) };
+    store.set({ bureau: fusion });
+    return store.get('bureau');
+  });
+
+  /// Lance une application et la loge dans le bureau.
+  ///
+  /// La boîte vient du rendu, qui seul sait où il reste de la place. Si
+  /// l'ancrage échoue, la fenêtre reste ouverte — flottante — et on le dit :
+  /// une application ouverte qu'on ne voit pas serait pire qu'un refus.
+  ipcMain.handle('desktop:launch', async (_e, pkg, options) => {
+    const boite = (options && options.boite) || { x: 240, y: 80, w: 800, h: 560 };
+    const { id } = await launch(pkg);
+    const sess = sessions.get(id);
+    if (!sess) return { id, logee: false };
+
+    const logee = await desktop.accueillir(sess, boite);
+    if (logee) desktop.envoyer('desktop:embedded', { id, package: pkg });
+    return { id, logee };
+  });
+
+  ipcMain.handle('desktop:place', async (_e, id, boite) => desktop.placer(id, boite));
+  ipcMain.handle('desktop:raise', async (_e, id) => desktop.remonter(id));
+  ipcMain.handle('desktop:fold', async (_e, id, replie) => desktop.replier(id, replie));
+  ipcMain.handle('desktop:detach', async (_e, id) => desktop.liberer(id));
+
+  /// Choisit une image de fond. Le rendu ne voit jamais l'arborescence : il
+  /// demande, le processus principal montre le sélecteur du système.
+  ipcMain.handle('desktop:wallpaper:pick', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(desktop.fenetre() || win, {
+      title: 'Choisir un fond d\'écran',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif', 'bmp'] }],
+    });
+    return canceled || !filePaths.length ? null : filePaths[0];
+  });
+
   /// La page accepte l'application liée qu'on lui a proposée.
   ///
   /// Le paquet ne fait pas confiance à la page pour autant : `launch` le
@@ -1251,6 +1336,7 @@ function createTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Ouvrir le lanceur', click: showLauncher },
+      { label: 'Ouvrir le bureau', click: () => ouvrirBureau() },
       { type: 'separator' },
       { label: 'Actualiser les applications', click: () => refreshApps().catch(() => {}) },
       { type: 'separator' },
@@ -1262,8 +1348,21 @@ function createTray() {
 
 // ── Cycle de vie ────────────────────────────────────────────────────────────
 
+// Une seule instance : la seconde ne fait que réveiller la première.
+//
+// Le verrou de Chromium vit dans le dossier de configuration et pointe vers un
+// socket dans `/tmp`. Les deux peuvent se désaccorder — instance tuée sans
+// ménagement, `/tmp` nettoyé pendant que l'application tournait — et Aura
+// refusait alors de démarrer sans un mot, ce qui est la pire façon d'échouer :
+// rien à l'écran, rien dans le journal, et un raccourci qui ne fait rien.
 const single = app.requestSingleInstanceLock();
 if (!single) {
+  log.init(app.getPath('userData'));
+  log.warn(
+    'une autre instance détient le verrou — cette instance s\'arrête. ' +
+      'Si aucune fenêtre Aura n\'est ouverte, le verrou est resté d\'un arrêt brutal : ' +
+      `supprimez ${path.join(app.getPath('userData'), 'Singleton*')} et relancez.`
+  );
   app.quit();
 } else {
   app.on('second-instance', showLauncher);
@@ -1276,6 +1375,11 @@ if (!single) {
     createTray();
     hotkeyState = registerHotkey();
     startUpdates();
+
+    // `--desktop` ouvre directement le mode bureau. Utile pour qui s'en sert
+    // comme poste de travail — le raccourci du menu d'applications peut le
+    // porter — et pour vérifier ce mode sans passer par le widget.
+    if (process.argv.includes('--desktop')) ouvrirBureau();
   });
 
   app.on('window-all-closed', () => { /* le lanceur vit dans la barre système */ });
@@ -1285,6 +1389,7 @@ if (!single) {
     clearInterval(callTimer);
     clearInterval(followTimer);
     device.closeShell();
+    require('./embed').fermer();
     globalShortcut.unregisterAll();
     // Laisser des scrcpy orphelins laisserait aussi des écrans virtuels ouverts
     // sur le téléphone.

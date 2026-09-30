@@ -65,6 +65,17 @@ const DEFAULTS = {
   // restent alors pilotables — cliquer sur une vignette ramène la fenêtre — au
   // prix d'un peu de netteté aux échelles fractionnaires. Sans effet sous X11.
   xwayland: true,
+  // Mode bureau : fond d'écran, position des widgets et des icônes, raccourcis.
+  // Rangé à part des réglages, parce que c'est une disposition et non des
+  // préférences — cela se déplace à la souris et s'écrit tout seul.
+  bureau: {
+    fond: 'nuit',
+    fondImage: null,
+    widgets: {},
+    widgetsActifs: ['horloge', 'appareil', 'notifs'],
+    icones: {},
+    raccourcis: [],
+  },
   // Les boîtes de dialogue du système — choix de la carte SIM, « ouvrir avec »,
   // demande de permission — ne savent pas s'afficher sur un écran virtuel.
   // Sans le miroir, il n'y a rien à valider depuis l'ordinateur.
@@ -136,6 +147,7 @@ const SCHEMA = {
   mirrorOnDialog: bool,
   followLaunches: { type: 'enum', values: ['off', 'ask', 'auto'] },
   xwayland: bool,
+  bureau: { type: 'bureau' },
   freeHeight: bool,
   autoUpdate: bool,
   showSystemApps: bool,
@@ -187,6 +199,38 @@ function valide(regle, value) {
     case 'serial':
       if (value === null) return null;
       return typeof value === 'string' && SERIAL.test(value) ? value : undefined;
+
+    case 'bureau': {
+      // La disposition du bureau vient du rendu, comme le reste. Les positions
+      // sont bornées à une surface plausible : une coordonnée absurde ferait
+      // disparaître un widget hors de l'écran, sans moyen de le rattraper.
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+      const point = (p) => (p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))
+        ? { x: Math.min(20000, Math.max(0, Math.round(Number(p.x)))), y: Math.min(20000, Math.max(0, Math.round(Number(p.y)))) }
+        : null);
+      const table = (t) => {
+        const out = {};
+        for (const [k, v] of Object.entries(t || {})) {
+          const p = point(v);
+          if (p) out[k] = p;
+        }
+        return out;
+      };
+      const noms = ['horloge', 'appareil', 'notifs'];
+      return {
+        fond: typeof value.fond === 'string' && /^[a-z]{2,12}$/.test(value.fond) ? value.fond : 'nuit',
+        // Un chemin d'image, ou rien. Il sera lu par `file://` dans la page.
+        fondImage: typeof value.fondImage === 'string' && value.fondImage.length < 4096 ? value.fondImage : null,
+        widgets: table(value.widgets),
+        widgetsActifs: Array.isArray(value.widgetsActifs)
+          ? value.widgetsActifs.filter((n) => noms.includes(n))
+          : noms,
+        icones: table(value.icones),
+        raccourcis: Array.isArray(value.raccourcis)
+          ? [...new Set(value.raccourcis.filter((p) => typeof p === 'string' && PACKAGE.test(p)))]
+          : [],
+      };
+    }
 
     case 'surcharges': {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
