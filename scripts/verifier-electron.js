@@ -48,8 +48,21 @@ app.whenReady().then(async () => {
     tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Ouvrir' }, { type: 'separator' }, { label: 'Quitter' }]));
     return true; });
 
-  // Raccourci global — avec le repli d'Aura
-  essai('globalShortcut.register(Ctrl+Alt+Space)', () => globalShortcut.register('Ctrl+Alt+Space', () => {}));
+  // Raccourci global.
+  //
+  // On descend la liste de repli d'Aura plutôt que d'exiger une combinaison
+  // précise : ce qui se vérifie ici est que l'API fonctionne, pas qu'un
+  // raccourci donné soit libre. Sur une machine où `Ctrl+Alt+Espace` est déjà
+  // pris — c'est arrivé pendant la mise au point — le test échouait sans que
+  // rien ne soit cassé, ce qu'un filet ne doit jamais faire.
+  essai('globalShortcut.register (liste de repli)', () => {
+    for (const combo of ['Ctrl+Alt+Space', 'Super+A', 'Ctrl+Alt+A', 'Ctrl+Shift+Space', 'Ctrl+Alt+K']) {
+      try {
+        if (globalShortcut.register(combo, () => {})) return combo;
+      } catch (_) { /* combinaison refusée : la suivante */ }
+    }
+    return false;
+  });
   essai('globalShortcut.unregisterAll', () => { globalShortcut.unregisterAll(); return true; });
 
   // Alertes du bureau
